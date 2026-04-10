@@ -1,0 +1,6 @@
+vendor/
+var/
+Dockerfile
+Dockerfile.dev
+.env
+.env.*

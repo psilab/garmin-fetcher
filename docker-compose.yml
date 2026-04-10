@@ -1,0 +1,28 @@
+services:
+  backend:
+    image: ghcr.io/psilab/garmin-fetcher-backend:latest
+    restart: unless-stopped
+    networks:
+      - web
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.garmin-backend.rule=Host(`api.garmin.psi.makeup`)"
+      - "traefik.http.routers.garmin-backend.entrypoints=websecure"
+      - "traefik.http.routers.garmin-backend.tls.certresolver=letsencrypt"
+      - "traefik.http.services.garmin-backend.loadbalancer.server.port=8000"
+
+  frontend:
+    image: ghcr.io/psilab/garmin-fetcher-frontend:latest
+    restart: unless-stopped
+    networks:
+      - web
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.garmin-frontend.rule=Host(`garmin.psi.makeup`)"
+      - "traefik.http.routers.garmin-frontend.entrypoints=websecure"
+      - "traefik.http.routers.garmin-frontend.tls.certresolver=letsencrypt"
+      - "traefik.http.services.garmin-frontend.loadbalancer.server.port=3000"
+
+networks:
+  web:
+    external: true
