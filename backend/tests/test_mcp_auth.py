@@ -18,9 +18,15 @@ def mcp_app(monkeypatch):
 
 @pytest.fixture
 async def client(mcp_app):
+    # FastMCP's StreamableHTTPSessionManager only initializes its task group
+    # inside the app's lifespan context — httpx's ASGITransport does not run
+    # ASGI lifespan events on its own, so we enter it manually here (mirrors
+    # the `app = FastAPI(lifespan=mcp_app.lifespan)` passthrough Plan 04 does
+    # in production; RESEARCH.md Pitfall 1).
     transport = httpx.ASGITransport(app=mcp_app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
-        yield c
+    async with mcp_app.lifespan(mcp_app):
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+            yield c
 
 
 @pytest.mark.anyio
