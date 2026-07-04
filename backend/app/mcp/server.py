@@ -9,20 +9,86 @@ Mounted by ``app/main.py`` (Plan 04) at ``/mcp``:
 request to the mount is bearer-checked before it ever reaches a tool.
 """
 
-from datetime import date
+from datetime import date, datetime, time, timedelta
 
 from fastmcp import FastMCP
+from sqlalchemy import func, select
 from starlette.middleware import Middleware
 
+from ..db import SessionLocal
+from ..models import Workout
 from .auth import BearerAuthMiddleware
 
 mcp = FastMCP("Garmin Coach")
+
+# Columns returned to the coach -- excludes `raw` to keep payloads small
+# (the coach doesn't need the raw Garmin JSON, per the plan's action notes).
+_SUMMARY_COLUMNS = (
+    "activity_id",
+    "activity_type",
+    "start_time",
+    "distance_m",
+    "duration_s",
+    "average_hr",
+    "calories",
+    "synced_at",
+)
+
+
+def _to_dict(workout: Workout) -> dict:
+    return {col: getattr(workout, col) for col in _SUMMARY_COLUMNS}
+
+
+def _validate_range(start: date | None, end: date | None) -> None:
+    if start and end and start > end:
+        raise ValueError("start must be <= end")
+
+
+def _apply_filters(stmt, activity_type: str | None, start: date | None, end: date | None):
+    """Parameterized filters only -- never string-format user input into SQL
+    (T-03-04, SQL injection mitigation)."""
+    _validate_range(start, end)
+    if activity_type is not None:
+        stmt = stmt.where(Workout.activity_type == activity_type)
+    if start is not None:
+        stmt = stmt.where(Workout.start_time >= datetime.combine(start, time.min))
+    if end is not None:
+        stmt = stmt.where(
+            Workout.start_time < datetime.combine(end, time.min) + timedelta(days=1)
+        )
+    return stmt
+
+
+def _aggregate(session, activity_type: str | None, start: date | None, end: date | None) -> dict:
+    stmt = select(
+        func.count(Workout.activity_id),
+        func.sum(Workout.distance_m),
+        func.sum(Workout.duration_s),
+        func.sum(Workout.calories),
+        func.avg(Workout.average_hr),
+    )
+    stmt = _apply_filters(stmt, activity_type, start, end)
+    count, total_distance_m, total_duration_s, total_calories, avg_hr = session.execute(
+        stmt
+    ).one()
+    return {
+        "count": count or 0,
+        "total_distance_m": total_distance_m,
+        "total_duration_s": total_duration_s,
+        "total_calories": total_calories,
+        "avg_hr": avg_hr,
+    }
 
 
 @mcp.tool
 def list_recent_workouts(limit: int = 10) -> list[dict]:
     """Most recent workouts, newest first."""
-    return []
+    session = SessionLocal()
+    try:
+        stmt = select(Workout).order_by(Workout.start_time.desc()).limit(limit)
+        return [_to_dict(w) for w in session.execute(stmt).scalars().all()]
+    finally:
+        session.close()
 
 
 @mcp.tool
@@ -32,7 +98,13 @@ def filter_workouts(
     end: date | None = None,
 ) -> list[dict]:
     """Workouts filtered by type and/or date range."""
-    return []
+    session = SessionLocal()
+    try:
+        stmt = _apply_filters(select(Workout), activity_type, start, end)
+        stmt = stmt.order_by(Workout.start_time.desc())
+        return [_to_dict(w) for w in session.execute(stmt).scalars().all()]
+    finally:
+        session.close()
 
 
 @mcp.tool
@@ -42,7 +114,11 @@ def aggregate_workouts(
     end: date | None = None,
 ) -> dict:
     """Totals (count, distance, duration, calories) for a filtered set."""
-    return {}
+    session = SessionLocal()
+    try:
+        return _aggregate(session, activity_type, start, end)
+    finally:
+        session.close()
 
 
 @mcp.tool
@@ -54,7 +130,14 @@ def compare_periods(
     activity_type: str | None = None,
 ) -> dict:
     """Plain count/sum comparison between two date ranges (no trend analysis)."""
-    return {}
+    session = SessionLocal()
+    try:
+        return {
+            "period_a": _aggregate(session, activity_type, period_a_start, period_a_end),
+            "period_b": _aggregate(session, activity_type, period_b_start, period_b_end),
+        }
+    finally:
+        session.close()
 
 
 # path="/" because the whole sub-app is mounted at /mcp by the parent app.
