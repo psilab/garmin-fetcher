@@ -6,8 +6,8 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     GARMINTOKENS=/tokens
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements.txt requirements-dev.txt .
+RUN pip install --no-cache-dir -r requirements.txt -r requirements-dev.txt
 
 # Source is bind-mounted in dev via docker-compose; --reload picks up changes.
 EXPOSE 8000
