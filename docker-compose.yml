@@ -10,14 +10,18 @@ services:
     environment:
       - MCP_TOKEN=${MCP_TOKEN}
     labels:
+      # MCP is served path-based on the existing host (garmin.psi.makeup/mcp) so it
+      # reuses the frontend's TLS cert and needs no dedicated DNS record. The router
+      # MUST reference its service explicitly: a container that declared multiple
+      # Traefik services could not be auto-linked in Traefik v3 and every backend
+      # route 404'd. PathPrefix(/mcp) + higher priority wins over the frontend's
+      # Host-only router for /mcp requests; all other paths still go to the frontend.
       - "traefik.enable=true"
-      - "traefik.http.routers.garmin-backend.rule=Host(`api.garmin.psi.makeup`)"
-      - "traefik.http.routers.garmin-backend.entrypoints=websecure"
-      - "traefik.http.routers.garmin-backend.tls.certresolver=letsencrypt"
-      - "traefik.http.services.garmin-backend.loadbalancer.server.port=8000"
-      - "traefik.http.routers.garmin-mcp.rule=Host(`mcp.garmin.psi.makeup`)"
+      - "traefik.http.routers.garmin-mcp.rule=Host(`garmin.psi.makeup`) && PathPrefix(`/mcp`)"
       - "traefik.http.routers.garmin-mcp.entrypoints=websecure"
       - "traefik.http.routers.garmin-mcp.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.garmin-mcp.priority=100"
+      - "traefik.http.routers.garmin-mcp.service=garmin-mcp"
       - "traefik.http.services.garmin-mcp.loadbalancer.server.port=8000"
 
   frontend:
