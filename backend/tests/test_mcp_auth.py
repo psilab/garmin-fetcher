@@ -1,0 +1,60 @@
+"""Tests for the hand-rolled bearer-token middleware on the MCP mount (SEC-02)."""
+
+import httpx
+import pytest
+
+
+@pytest.fixture
+def mcp_app(monkeypatch):
+    """Import app.mcp.server fresh with MCP_TOKEN set, returning its mcp_app."""
+    monkeypatch.setenv("MCP_TOKEN", "test-secret")
+    import importlib
+
+    import app.mcp.server as server_module
+
+    importlib.reload(server_module)
+    return server_module.mcp_app
+
+
+@pytest.fixture
+async def client(mcp_app):
+    transport = httpx.ASGITransport(app=mcp_app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+        yield c
+
+
+@pytest.mark.anyio
+async def test_missing_token_401(client):
+    response = await client.post("/", json={})
+    assert response.status_code == 401
+
+
+@pytest.mark.anyio
+async def test_invalid_token_401(client):
+    response = await client.post(
+        "/", json={}, headers={"Authorization": "Bearer wrong-token"}
+    )
+    assert response.status_code == 401
+
+
+@pytest.mark.anyio
+async def test_valid_token_ok(client):
+    response = await client.post(
+        "/", json={}, headers={"Authorization": "Bearer test-secret"}
+    )
+    assert response.status_code != 401
+
+
+@pytest.mark.anyio
+async def test_401_body_does_not_echo_submitted_token(client):
+    submitted = "super-secret-wrong-token-xyz"
+    response = await client.post(
+        "/", json={}, headers={"Authorization": f"Bearer {submitted}"}
+    )
+    assert response.status_code == 401
+    assert submitted not in response.text
+
+
+@pytest.fixture
+def anyio_backend():
+    return "asyncio"
