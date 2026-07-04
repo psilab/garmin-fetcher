@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "garmin-coach": {
+      "type": "http",
+      "url": "https://mcp.garmin.psi.makeup/mcp",
+      "headers": {
+        "Authorization": "Bearer ${MCP_TOKEN}"
+      }
+    }
+  }
+}

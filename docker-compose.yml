@@ -6,12 +6,19 @@ services:
       - web
     volumes:
       - garmin_tokens:/tokens
+      - sqlite_data:/app/data
+    environment:
+      - MCP_TOKEN=${MCP_TOKEN}
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.garmin-backend.rule=Host(`api.garmin.psi.makeup`)"
       - "traefik.http.routers.garmin-backend.entrypoints=websecure"
       - "traefik.http.routers.garmin-backend.tls.certresolver=letsencrypt"
       - "traefik.http.services.garmin-backend.loadbalancer.server.port=8000"
+      - "traefik.http.routers.garmin-mcp.rule=Host(`mcp.garmin.psi.makeup`)"
+      - "traefik.http.routers.garmin-mcp.entrypoints=websecure"
+      - "traefik.http.routers.garmin-mcp.tls.certresolver=letsencrypt"
+      - "traefik.http.services.garmin-mcp.loadbalancer.server.port=8000"
 
   frontend:
     image: ghcr.io/psilab/garmin-fetcher-frontend:latest
@@ -29,6 +36,7 @@ services:
 
 volumes:
   garmin_tokens:
+  sqlite_data:
 
 networks:
   web:
