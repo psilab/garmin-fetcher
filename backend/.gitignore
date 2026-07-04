@@ -4,3 +4,8 @@ __pycache__/
 .env.local
 tokens/
 .venv/
+data/
+*.db
+*.db-wal
+*.db-shm
+.pytest_cache/
