@@ -71,6 +71,22 @@ async def test_401_body_does_not_echo_submitted_token(client):
     assert submitted not in response.text
 
 
+def test_empty_mcp_token_refuses_to_import(monkeypatch):
+    """An empty MCP_TOKEN must fail fast, not silently allow `Bearer ` bypass."""
+    import importlib
+
+    import app.mcp.auth as auth_module
+
+    monkeypatch.setenv("MCP_TOKEN", "")
+    with pytest.raises(RuntimeError):
+        importlib.reload(auth_module)
+
+    # Restore a valid token so reloading doesn't leave the module unusable
+    # for any later test that imports it.
+    monkeypatch.setenv("MCP_TOKEN", "test-secret")
+    importlib.reload(auth_module)
+
+
 @pytest.fixture
 def anyio_backend():
     return "asyncio"

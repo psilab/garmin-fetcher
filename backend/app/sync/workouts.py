@@ -22,20 +22,34 @@ _START_TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 def map_activity_to_row(raw: dict) -> dict:
     """Map a raw Garmin activity dict onto a ``Workout`` row dict.
 
-    Every optional field lookup degrades to ``None`` rather than raising
-    ``KeyError`` (T-02-01 mitigation) -- a missing/renamed field must never
-    crash the whole backfill. The full raw payload is always preserved in
-    the ``raw`` column (D-03/DATA-07) regardless of mapping accuracy.
+    Optional summary fields degrade to ``None`` rather than raising
+    (T-02-01 mitigation). The two fields a row cannot exist without --
+    ``activityId`` (primary key) and ``startTimeLocal`` -- raise ``ValueError``
+    if absent/unparseable so the caller can skip *that* activity without
+    aborting the whole backfill (see ``backfill_workouts``). ``activity_type``
+    is a NOT NULL column, so a missing ``typeKey`` degrades to ``"unknown"``
+    rather than producing an ``IntegrityError``. The full raw payload is always
+    preserved in the ``raw`` column (D-03/DATA-07) regardless of mapping.
     """
     activity_type_field = raw.get("activityType") or {}
+
+    activity_id = raw.get("activityId")
+    if activity_id is None:
+        raise ValueError("activity is missing required 'activityId'")
+
+    start_time_raw = raw.get("startTimeLocal")
+    if not start_time_raw:
+        raise ValueError("activity is missing required 'startTimeLocal'")
+    # strptime raises ValueError on a malformed value -- surfaced to the caller.
+    start_time = datetime.strptime(start_time_raw, _START_TIME_FORMAT)
 
     average_hr = raw.get("averageHR")
     calories = raw.get("calories")
 
     return {
-        "activity_id": int(raw["activityId"]),
-        "activity_type": activity_type_field.get("typeKey"),
-        "start_time": datetime.strptime(raw["startTimeLocal"], _START_TIME_FORMAT),
+        "activity_id": int(activity_id),
+        "activity_type": activity_type_field.get("typeKey") or "unknown",
+        "start_time": start_time,
         "distance_m": raw.get("distance"),
         "duration_s": raw.get("duration"),
         "average_hr": int(average_hr) if average_hr is not None else None,
@@ -70,10 +84,22 @@ def backfill_workouts(session, client, start: str = "2000-01-01", end: str | Non
     time.sleep(0.2)
 
     count = 0
+    skipped = 0
     for raw in activities:
-        row = map_activity_to_row(raw)
+        try:
+            row = map_activity_to_row(raw)
+        except (KeyError, ValueError, TypeError) as exc:
+            # One malformed/renamed activity must never abort the whole backfill
+            # (T-02-01). Skip it -- its data is not silently lost, since a
+            # re-run will pick it up once Garmin's payload is well-formed again.
+            skipped += 1
+            aid = raw.get("activityId") if isinstance(raw, dict) else None
+            print(f"[sync] skipped unmappable activity {aid!r}: {exc}")
+            continue
         _upsert_workout(session, row)
         count += 1
 
     session.commit()
+    if skipped:
+        print(f"[sync] backfill complete: {count} upserted, {skipped} skipped")
     return count

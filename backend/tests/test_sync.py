@@ -67,6 +67,38 @@ def test_map_activity_to_row_handles_missing_optional_fields():
     assert row["raw"] == json.dumps(synthetic, sort_keys=True)
 
 
+def test_map_activity_defaults_activity_type_when_typekey_missing():
+    # activity_type is NOT NULL; a missing typeKey must degrade to "unknown"
+    # rather than producing None (which would raise IntegrityError on insert).
+    row = map_activity_to_row(
+        {"activityId": 7, "startTimeLocal": "2026-01-01 07:00:00"}
+    )
+    assert row["activity_type"] == "unknown"
+
+
+def test_map_activity_raises_on_missing_essential_fields():
+    import pytest
+
+    with pytest.raises(ValueError):
+        map_activity_to_row({"startTimeLocal": "2026-01-01 07:00:00"})  # no activityId
+    with pytest.raises(ValueError):
+        map_activity_to_row({"activityId": 1})  # no startTimeLocal
+    with pytest.raises(ValueError):
+        map_activity_to_row({"activityId": 1, "startTimeLocal": "not-a-date"})
+
+
+def test_backfill_skips_unmappable_rows_without_aborting(db_session):
+    activities = _synthetic_activities()  # 3 good rows
+    activities.insert(1, {"activityType": {"typeKey": "running"}})  # bad: no id/time
+    client = FakeGarminClient(activities)
+
+    count = backfill_workouts(db_session, client)
+
+    # The one bad row is skipped; the 3 good rows still persist.
+    assert count == 3
+    assert db_session.query(Workout).count() == 3
+
+
 def test_backfill_workouts_inserts_rows(db_session):
     client = FakeGarminClient(_synthetic_activities())
 

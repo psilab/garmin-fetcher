@@ -8,7 +8,10 @@ services:
       - garmin_tokens:/tokens
       - sqlite_data:/app/data
     environment:
-      - MCP_TOKEN=${MCP_TOKEN}
+      # `:?` makes `docker compose up` fail loudly if MCP_TOKEN is unset/empty on
+      # the host, instead of silently passing an empty token (which the app also
+      # now rejects at startup — see backend/app/mcp/auth.py).
+      - MCP_TOKEN=${MCP_TOKEN:?MCP_TOKEN must be set on the host/.env}
     labels:
       # MCP is served path-based on the existing host (garmin.psi.makeup/mcp) so it
       # reuses the frontend's TLS cert and needs no dedicated DNS record. The router

@@ -17,7 +17,17 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-EXPECTED_TOKEN = os.environ["MCP_TOKEN"]  # fail fast if unset
+EXPECTED_TOKEN = os.environ.get("MCP_TOKEN", "")
+# Fail fast if unset OR empty. An empty expected token is a full auth bypass:
+# an ``Authorization: Bearer `` (empty submitted token) makes
+# ``secrets.compare_digest("", "")`` return True. Note Docker Compose's
+# ``${MCP_TOKEN}`` substitution turns an *unset* host var into an empty string
+# (not a KeyError), so guarding only on presence is insufficient.
+if not EXPECTED_TOKEN:
+    raise RuntimeError(
+        "MCP_TOKEN is unset or empty — refusing to start: an empty bearer "
+        "token would leave the MCP mount unauthenticated (SEC-02)."
+    )
 
 
 class BearerAuthMiddleware(BaseHTTPMiddleware):
@@ -32,6 +42,6 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         auth = request.headers.get("authorization", "")
         scheme, _, token = auth.partition(" ")
-        if scheme.lower() != "bearer" or not secrets.compare_digest(token, EXPECTED_TOKEN):
+        if scheme.lower() != "bearer" or not token or not secrets.compare_digest(token, EXPECTED_TOKEN):
             return JSONResponse({"detail": "Unauthorized"}, status_code=401)
         return await call_next(request)
