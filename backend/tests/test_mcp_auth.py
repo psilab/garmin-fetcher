@@ -6,12 +6,22 @@ import pytest
 
 @pytest.fixture
 def mcp_app(monkeypatch):
-    """Import app.mcp.server fresh with MCP_TOKEN set, returning its mcp_app."""
+    """Import app.mcp.server fresh with MCP_TOKEN set, returning its mcp_app.
+
+    Reloads app.mcp.auth too (not just app.mcp.server) -- EXPECTED_TOKEN is
+    read at app.mcp.auth's own import time, so reloading only server_module
+    leaves EXPECTED_TOKEN stale if some other test module (e.g.
+    test_main_mcp_mount.py, which may import app.main -> app.mcp.auth first
+    depending on test collection order) already triggered auth.py's first
+    import with a different MCP_TOKEN value.
+    """
     monkeypatch.setenv("MCP_TOKEN", "test-secret")
     import importlib
 
+    import app.mcp.auth as auth_module
     import app.mcp.server as server_module
 
+    importlib.reload(auth_module)
     importlib.reload(server_module)
     return server_module.mcp_app
 

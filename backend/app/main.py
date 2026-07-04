@@ -9,10 +9,17 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 from .garmin import NotAuthenticated, get_client
+from .mcp.server import mcp_app
 
-app = FastAPI(title="Garmin Fetcher", version="0.1.0")
+# RESEARCH.md Pattern 1 / Pitfall 1: mcp_app.lifespan MUST be passed through
+# to the parent FastAPI app, or the MCP session manager's task group never
+# initializes and every /mcp request hangs or fails with a RuntimeError.
+app = FastAPI(title="Garmin Fetcher", version="0.1.0", lifespan=mcp_app.lifespan)
 
 # PoC: allow the Next.js frontend (any origin) to call us.
+# Scoped only to this parent app -- the /mcp mount below carries its own
+# BearerAuthMiddleware (Plan 03) and deliberately does NOT inherit this
+# permissive CORS policy (RESEARCH.md Open Question 2).
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -61,3 +68,9 @@ def activities_range(
         return client.get_activities_by_date(start.isoformat(), end.isoformat())
     except NotAuthenticated as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+
+# D-04's only read surface over the workouts table is MCP -- no new REST
+# endpoints added here (out of scope per SKELETON.md). Mounted last so the
+# REST routes above are unaffected by anything on the /mcp sub-app.
+app.mount("/mcp", mcp_app)
