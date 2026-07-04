@@ -4,6 +4,8 @@ services:
     restart: unless-stopped
     networks:
       - web
+    volumes:
+      - garmin_tokens:/tokens
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.garmin-backend.rule=Host(`api.garmin.psi.makeup`)"
@@ -16,12 +18,17 @@ services:
     restart: unless-stopped
     networks:
       - web
+    environment:
+      - BACKEND_URL=http://backend:8000
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.garmin-frontend.rule=Host(`garmin.psi.makeup`)"
       - "traefik.http.routers.garmin-frontend.entrypoints=websecure"
       - "traefik.http.routers.garmin-frontend.tls.certresolver=letsencrypt"
       - "traefik.http.services.garmin-frontend.loadbalancer.server.port=3000"
+
+volumes:
+  garmin_tokens:
 
 networks:
   web:
