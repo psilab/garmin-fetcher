@@ -65,6 +65,12 @@ def run_daily_sync() -> None:
                 logger.info("[sync:scheduler] %s: synced %s rows", name, count)
             except Exception:  # noqa: BLE001 - per-domain isolation (T-02-14/CR-01/CR-02)
                 logger.exception("[sync:scheduler] %s: sync failed, continuing other domains", name)
+                # Roll back the shared session (WR-01): a DB-level failure
+                # leaves it in a pending-rollback state, so the NEXT domain's
+                # window_for SELECT would itself raise -- cascading one
+                # domain's failure into the others and defeating per-domain
+                # isolation. rollback() is a no-op if nothing is pending.
+                session.rollback()
                 continue
     finally:
         session.close()

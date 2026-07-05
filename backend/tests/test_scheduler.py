@@ -68,6 +68,57 @@ def test_run_daily_sync_isolates_a_domain_failure(monkeypatch, db_session):
     assert calls["body_composition"] == 1
 
 
+def test_run_daily_sync_rolls_back_so_a_db_error_does_not_cascade(monkeypatch, db_session):
+    """Regression (WR-01): the three domains share ONE session. If a domain
+    fails DURING a DB statement, SQLAlchemy leaves the session in a
+    pending-rollback state; without session.rollback() in the per-domain
+    handler, the NEXT domain's window_for SELECT itself raises
+    (PendingRollbackError) and gets skipped -- cascading one domain's failure
+    into the others. Here the first domain poisons the session and raises;
+    the subsequent domain must still run (proving the rollback happened)."""
+    from sqlalchemy import text
+
+    monkeypatch.setattr(scheduler_mod, "get_client", lambda: object())
+    monkeypatch.setattr(scheduler_mod, "SessionLocal", lambda: db_session)
+    monkeypatch.setattr(db_session, "close", lambda: None)
+
+    calls = {"daily_health": 0}
+
+    def poisoning_backfill(session, client):
+        # Emulate a DB-level failure mid-domain: the failed statement leaves
+        # the shared session in a pending-rollback state.
+        try:
+            session.execute(text("SELECT * FROM definitely_not_a_real_table"))
+        except Exception:
+            pass
+        raise RuntimeError("simulated DB failure in sleep domain")
+
+    def daily_health_backfill(session, client):
+        # This runs only if the session was rolled back after the first
+        # domain -- otherwise window_for's SELECT (called by run_daily_sync
+        # before this fn) raises and the domain is skipped.
+        calls["daily_health"] += 1
+        return 2
+
+    monkeypatch.setattr(
+        scheduler_mod,
+        "_DOMAIN_REGISTRY",
+        [
+            (scheduler_mod.Sleep, scheduler_mod.sync_sleep_window, poisoning_backfill, "sleep"),
+            (
+                scheduler_mod.DailyHealth,
+                scheduler_mod.sync_daily_health_window,
+                daily_health_backfill,
+                "daily_health",
+            ),
+        ],
+    )
+
+    run_daily_sync()
+
+    assert calls["daily_health"] == 1
+
+
 def test_run_daily_sync_falls_back_to_backfill_on_empty_table(monkeypatch, db_session):
     """window_for returns (None, today) for an empty table -- run_daily_sync
     must call the domain's backfill_* fn, not its sync_*_window fn."""
