@@ -65,6 +65,32 @@ def _body_battery_high_low(body_battery) -> tuple[int | None, int | None]:
     return max(levels), min(levels)
 
 
+def _training_status_phrase(training_status) -> str | None:
+    """Extract the human-readable training-status LABEL (e.g. "RECOVERY_1")
+    from a ``get_training_status`` payload.
+
+    Confirmed live structure:
+    ``mostRecentTrainingStatus.latestTrainingStatusData`` is a dict keyed by
+    a DYNAMIC device id (e.g. "3476168089"); each value carries the string
+    ``trainingStatusFeedbackPhrase`` (and a numeric ``trainingStatus`` code
+    we ignore). ``mostRecentTrainingStatus`` is itself a dict -- storing it
+    (or the raw dict) in the String column raised
+    ``sqlite3.ProgrammingError: type 'dict' is not supported`` (live-smoke
+    regression). Defensive: tolerates missing/None payloads, absent keys,
+    and multiple devices -- returns the first non-empty phrase or ``None``.
+    """
+    if not isinstance(training_status, dict):
+        return None
+    most_recent = training_status.get("mostRecentTrainingStatus") or {}
+    latest = most_recent.get("latestTrainingStatusData") or {}
+    if not isinstance(latest, dict):
+        return None
+    for device in latest.values():
+        if isinstance(device, dict) and device.get("trainingStatusFeedbackPhrase"):
+            return device["trainingStatusFeedbackPhrase"]
+    return None
+
+
 def map_sleep_to_row(raw: dict, cdate: str) -> dict:
     """Map a combined per-day sleep payload onto a ``Sleep`` row dict.
 
@@ -99,8 +125,7 @@ def map_sleep_to_row(raw: dict, cdate: str) -> dict:
     if isinstance(training_readiness_list, list) and training_readiness_list:
         training_readiness = (training_readiness_list[0] or {}).get("score")
 
-    training_status_dto = (raw or {}).get("training_status") or {}
-    training_status = training_status_dto.get("mostRecentTrainingStatus")
+    training_status = _training_status_phrase((raw or {}).get("training_status"))
 
     body_battery_high, body_battery_low = _body_battery_high_low(
         (raw or {}).get("body_battery")

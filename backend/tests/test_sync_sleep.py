@@ -6,6 +6,24 @@ from app.models import Sleep
 from app.sync.sleep import backfill_sleep, map_sleep_to_row, sync_sleep_window
 
 
+def _training_status_payload(phrase="RECOVERY_1", device_id="3476168089"):
+    """Build a realistic get_training_status payload: the status LABEL lives
+    at mostRecentTrainingStatus.latestTrainingStatusData.<dynamic device id>
+    .trainingStatusFeedbackPhrase (a string), NOT directly on
+    mostRecentTrainingStatus (which is a dict). Mirrors the confirmed live
+    structure that surfaced the dict-binding regression."""
+    return {
+        "mostRecentTrainingStatus": {
+            "latestTrainingStatusData": {
+                device_id: {
+                    "trainingStatus": 5,
+                    "trainingStatusFeedbackPhrase": phrase,
+                }
+            }
+        }
+    }
+
+
 class FakeGarminClient:
     """Stand-in for garminconnect.Garmin -- per-day sleep/recovery getters.
 
@@ -67,7 +85,7 @@ def _synthetic_day(sleep_score=80, deep_s=4000.0, hrv_avg=34.0):
         },
         "hrv": None,
         "training_readiness": [{"score": 55}],
-        "training_status": {"mostRecentTrainingStatus": "PRODUCTIVE"},
+        "training_status": _training_status_payload("PRODUCTIVE_1"),
         "body_battery": [
             {
                 "date": "placeholder",
@@ -97,7 +115,7 @@ def test_map_sleep_to_row_maps_known_fields_from_live_fixture(sample_sleep):
         "sleep": sample_sleep["sleep"],
         "hrv": None,
         "training_readiness": [{"score": 55}],
-        "training_status": {"mostRecentTrainingStatus": "PRODUCTIVE"},
+        "training_status": _training_status_payload("RECOVERY_1"),
         "body_battery": sample_sleep["body_battery"],
     }
 
@@ -111,9 +129,44 @@ def test_map_sleep_to_row_maps_known_fields_from_live_fixture(sample_sleep):
     assert row["awake_s"] == 0
     assert row["hrv_avg"] == 34.0
     assert row["training_readiness"] == 55
-    assert row["training_status"] == "PRODUCTIVE"
+    assert row["training_status"] == "RECOVERY_1"
+    assert isinstance(row["training_status"], str)
     assert row["body_battery_high"] == 84
     assert row["body_battery_low"] == 39
+
+
+def test_map_sleep_to_row_extracts_nested_training_status_phrase():
+    """Regression (live smoke): the training-status LABEL is a string nested
+    under mostRecentTrainingStatus.latestTrainingStatusData.<device id>
+    .trainingStatusFeedbackPhrase. Storing the mostRecentTrainingStatus dict
+    itself raised sqlite3.ProgrammingError ('dict' is not supported)."""
+    combined = {
+        "sleep": _synthetic_day()["sleep"],
+        "hrv": None,
+        "training_readiness": [],
+        "training_status": _training_status_payload("RECOVERY_1"),
+        "body_battery": [],
+    }
+
+    row = map_sleep_to_row(combined, "2026-01-01")
+
+    assert row["training_status"] == "RECOVERY_1"
+    assert isinstance(row["training_status"], str)
+
+
+def test_map_sleep_to_row_training_status_absent_yields_none_without_crash():
+    """A missing/empty/None get_training_status payload degrades to None
+    (no crash) -- weigh the dict-binding fix does not over-reach."""
+    for ts in (None, {}, {"mostRecentTrainingStatus": {}}, {"mostRecentTrainingStatus": None}):
+        combined = {
+            "sleep": _synthetic_day()["sleep"],
+            "hrv": None,
+            "training_readiness": [],
+            "training_status": ts,
+            "body_battery": [],
+        }
+        row = map_sleep_to_row(combined, "2026-01-01")
+        assert row["training_status"] is None
 
 
 def test_map_sleep_to_row_body_battery_absent_degrades_to_none(sample_sleep):
