@@ -43,3 +43,11 @@ def sample_daily_health():
     capture_fixtures.py) -- the PRIMARY daily-health getter."""
     with open(FIXTURES_DIR / "sample_daily_health.json") as f:
         return json.load(f)
+
+
+@pytest.fixture
+def sample_weigh_ins():
+    """Live-captured get_weigh_ins(start, end) RANGE payload (see Plan
+    02-01's capture_fixtures.py) -- dailyWeightSummaries -> allWeightMetrics."""
+    with open(FIXTURES_DIR / "sample_weigh_ins.json") as f:
+        return json.load(f)
