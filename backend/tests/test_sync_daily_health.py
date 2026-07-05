@@ -106,6 +106,23 @@ def test_map_daily_health_to_row_null_spo2_still_stores_steps_and_hr():
     assert row["respiration_avg"] is None
 
 
+def test_map_daily_health_to_row_non_numeric_spo2_degrades_to_none_keeping_other_fields():
+    """Regression (WR-02): a garbage averageSpo2 must degrade to None WITHOUT
+    dropping the rest of the day. An unconditional int() raised ValueError,
+    which propagated to the day-level handler and skipped the entire row
+    (steps, resting HR, ...) -- the opposite of the documented per-field
+    degradation contract."""
+    stats = _synthetic_day()["stats"]
+    stats["averageSpo2"] = "N/A"  # non-numeric garbage from Garmin
+
+    row = map_daily_health_to_row(stats, "2026-01-01", spo2=None, respiration=None)
+
+    assert row["spo2_avg"] is None
+    assert row["total_steps"] == 5928
+    assert row["resting_hr"] == 56
+    assert row["stress_avg"] == 24
+
+
 def test_map_daily_health_to_row_tolerates_missing_stats_fields():
     row = map_daily_health_to_row({}, "2026-01-01")
 

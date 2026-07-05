@@ -60,7 +60,14 @@ def map_daily_health_to_row(
 
     spo2_avg = stats.get("averageSpo2")
     if spo2_avg is not None:
-        spo2_avg = int(spo2_avg)
+        # Degrade only THIS field to None on a malformed value (WR-02): an
+        # unconditional int() would raise ValueError and drop the entire
+        # day's row (steps, resting HR, stress, ...), contradicting the
+        # documented "a day missing SpO2 still stores steps/resting_hr".
+        try:
+            spo2_avg = int(spo2_avg)
+        except (TypeError, ValueError):
+            spo2_avg = None
 
     combined = {"stats": stats, "spo2": spo2, "respiration": respiration}
 
