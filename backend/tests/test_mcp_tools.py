@@ -17,7 +17,7 @@ import pytest
 # be set before the first import of app.mcp.server regardless of test order).
 os.environ.setdefault("MCP_TOKEN", "test-secret-for-tool-tests")
 
-from app.models import Sleep, Workout
+from app.models import DailyHealth, Sleep, Workout
 
 
 @pytest.fixture(autouse=True)
@@ -250,3 +250,89 @@ def test_aggregate_sleep_totals(db_session):
     assert result["count"] == 2
     assert result["avg_sleep_score"] == pytest.approx(85.0)
     assert result["avg_hrv"] == pytest.approx(35.0)
+
+
+def _make_daily_health(day, total_steps=5928, **overrides):
+    defaults = dict(
+        date=day,
+        total_steps=total_steps,
+        resting_hr=56,
+        stress_avg=24,
+        spo2_avg=95,
+        respiration_avg=15.0,
+        intensity_minutes_moderate=40,
+        intensity_minutes_vigorous=5,
+        raw="{}",
+    )
+    defaults.update(overrides)
+    return DailyHealth(**defaults)
+
+
+def test_list_recent_daily_health_orders_newest_first(db_session):
+    from app.mcp.server import list_recent_daily_health
+
+    db_session.add_all(
+        [
+            _make_daily_health(date(2026, 1, 1)),
+            _make_daily_health(date(2026, 1, 3)),
+            _make_daily_health(date(2026, 1, 2)),
+        ]
+    )
+    db_session.commit()
+
+    result = list_recent_daily_health(limit=2)
+
+    assert [d["date"] for d in result] == [date(2026, 1, 3), date(2026, 1, 2)]
+
+
+def test_list_recent_daily_health_excludes_raw(db_session):
+    from app.mcp.server import list_recent_daily_health
+
+    db_session.add(_make_daily_health(date(2026, 1, 1)))
+    db_session.commit()
+
+    result = list_recent_daily_health(limit=1)
+
+    assert "raw" not in result[0]
+
+
+def test_filter_daily_health_by_date_range(db_session):
+    from app.mcp.server import filter_daily_health
+
+    db_session.add_all(
+        [
+            _make_daily_health(date(2026, 1, 1)),
+            _make_daily_health(date(2026, 2, 1)),
+            _make_daily_health(date(2026, 1, 15)),
+        ]
+    )
+    db_session.commit()
+
+    result = filter_daily_health(start=date(2026, 1, 1), end=date(2026, 1, 31))
+
+    assert sorted(d["date"] for d in result) == [date(2026, 1, 1), date(2026, 1, 15)]
+
+
+def test_filter_daily_health_rejects_start_after_end(db_session):
+    from app.mcp.server import filter_daily_health
+
+    with pytest.raises(ValueError):
+        filter_daily_health(start=date(2026, 2, 1), end=date(2026, 1, 1))
+
+
+def test_aggregate_daily_health_totals(db_session):
+    from app.mcp.server import aggregate_daily_health
+
+    db_session.add_all(
+        [
+            _make_daily_health(date(2026, 1, 1), total_steps=5000, resting_hr=50),
+            _make_daily_health(date(2026, 1, 2), total_steps=7000, resting_hr=60),
+        ]
+    )
+    db_session.commit()
+
+    result = aggregate_daily_health(start=date(2026, 1, 1), end=date(2026, 1, 31))
+
+    assert result["count"] == 2
+    assert result["avg_total_steps"] == pytest.approx(6000.0)
+    assert result["avg_resting_hr"] == pytest.approx(55.0)

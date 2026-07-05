@@ -16,7 +16,7 @@ from sqlalchemy import func, select
 from starlette.middleware import Middleware
 
 from ..db import SessionLocal
-from ..models import Sleep, Workout
+from ..models import DailyHealth, Sleep, Workout
 from .auth import BearerAuthMiddleware
 
 mcp = FastMCP("Garmin Coach")
@@ -228,6 +228,92 @@ def aggregate_sleep(start: date | None = None, end: date | None = None) -> dict:
             "avg_body_battery_high": avg_body_battery_high,
             "avg_body_battery_low": avg_body_battery_low,
             "avg_training_readiness": avg_training_readiness,
+        }
+    finally:
+        session.close()
+
+
+# --- Daily-health tools (DATA-03 -- list/filter/aggregate, mirroring the
+# sleep trio) ---
+
+# Excludes `raw` -- the coach doesn't need the raw Garmin get_stats/spo2/
+# respiration JSON (T-02-09 mitigation).
+_DAILY_HEALTH_SUMMARY_COLUMNS = (
+    "date",
+    "total_steps",
+    "resting_hr",
+    "stress_avg",
+    "spo2_avg",
+    "respiration_avg",
+    "intensity_minutes_moderate",
+    "intensity_minutes_vigorous",
+    "synced_at",
+)
+
+
+def _daily_health_to_dict(daily_health: DailyHealth) -> dict:
+    return {col: getattr(daily_health, col) for col in _DAILY_HEALTH_SUMMARY_COLUMNS}
+
+
+@mcp.tool
+def list_recent_daily_health(limit: int = 10) -> list[dict]:
+    """Most recent days of all-day health data, newest first."""
+    session = SessionLocal()
+    try:
+        stmt = select(DailyHealth).order_by(DailyHealth.date.desc()).limit(limit)
+        return [_daily_health_to_dict(d) for d in session.execute(stmt).scalars().all()]
+    finally:
+        session.close()
+
+
+@mcp.tool
+def filter_daily_health(start: date | None = None, end: date | None = None) -> list[dict]:
+    """All-day health rows within an inclusive date range."""
+    session = SessionLocal()
+    try:
+        stmt = _apply_date_filters(select(DailyHealth), DailyHealth.date, start, end)
+        stmt = stmt.order_by(DailyHealth.date.desc())
+        return [_daily_health_to_dict(d) for d in session.execute(stmt).scalars().all()]
+    finally:
+        session.close()
+
+
+@mcp.tool
+def aggregate_daily_health(start: date | None = None, end: date | None = None) -> dict:
+    """Count + averages (steps, resting HR, stress, SpO2, respiration,
+    intensity minutes) over a filtered set of days."""
+    session = SessionLocal()
+    try:
+        stmt = select(
+            func.count(DailyHealth.date),
+            func.avg(DailyHealth.total_steps),
+            func.avg(DailyHealth.resting_hr),
+            func.avg(DailyHealth.stress_avg),
+            func.avg(DailyHealth.spo2_avg),
+            func.avg(DailyHealth.respiration_avg),
+            func.avg(DailyHealth.intensity_minutes_moderate),
+            func.avg(DailyHealth.intensity_minutes_vigorous),
+        )
+        stmt = _apply_date_filters(stmt, DailyHealth.date, start, end)
+        (
+            count,
+            avg_total_steps,
+            avg_resting_hr,
+            avg_stress_avg,
+            avg_spo2_avg,
+            avg_respiration_avg,
+            avg_intensity_minutes_moderate,
+            avg_intensity_minutes_vigorous,
+        ) = session.execute(stmt).one()
+        return {
+            "count": count or 0,
+            "avg_total_steps": avg_total_steps,
+            "avg_resting_hr": avg_resting_hr,
+            "avg_stress_avg": avg_stress_avg,
+            "avg_spo2_avg": avg_spo2_avg,
+            "avg_respiration_avg": avg_respiration_avg,
+            "avg_intensity_minutes_moderate": avg_intensity_minutes_moderate,
+            "avg_intensity_minutes_vigorous": avg_intensity_minutes_vigorous,
         }
     finally:
         session.close()
