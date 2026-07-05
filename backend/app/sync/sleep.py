@@ -182,9 +182,14 @@ def _iter_sleep_days(session, client, start: str, end: str, throttle: float = _D
                 "body_battery": body_battery,
             }
             row = map_sleep_to_row(combined, cdate)
-        except (KeyError, ValueError, TypeError) as exc:
+        except Exception as exc:  # untrusted Garmin JSON: isolate the day, never abort the run (CR-01)
+            # Broad on purpose: wrong-shaped payloads raise AttributeError
+            # (e.g. a non-dict where a dict is expected), which a narrow
+            # (KeyError, ValueError, TypeError) tuple would let escape and
+            # abort the whole run. KeyboardInterrupt/SystemExit are
+            # BaseException, so they still propagate.
             skipped += 1
-            print(f"[sync:sleep] skipped {cdate}: {exc}")
+            print(f"[sync:sleep] skipped {cdate}: {type(exc).__name__}: {exc}")
             continue
         finally:
             # Rate-limit insurance per per-day call batch (RESEARCH Pitfall 2)

@@ -104,9 +104,14 @@ def _iter_daily_health_days(
             spo2 = client.get_spo2_data(cdate)
             respiration = client.get_respiration_data(cdate)
             row = map_daily_health_to_row(stats, cdate, spo2=spo2, respiration=respiration)
-        except (KeyError, ValueError, TypeError) as exc:
+        except Exception as exc:  # untrusted Garmin JSON: isolate the day, never abort the run (CR-01)
+            # Broad on purpose (mirrors sleep.py): a wrong-shaped payload
+            # raises AttributeError, which a narrow (KeyError, ValueError,
+            # TypeError) tuple would let escape and abort the whole run.
+            # KeyboardInterrupt/SystemExit are BaseException, so they still
+            # propagate.
             skipped += 1
-            print(f"[sync:daily_health] skipped {cdate}: {exc}")
+            print(f"[sync:daily_health] skipped {cdate}: {type(exc).__name__}: {exc}")
             continue
         finally:
             # Rate-limit insurance per per-day call batch (mirrors sleep.py).

@@ -170,6 +170,27 @@ def test_backfill_daily_health_skips_malformed_day_without_aborting(db_session, 
     assert db_session.query(DailyHealth).count() == 2
 
 
+def test_backfill_daily_health_skips_wrong_shaped_day_without_losing_other_days(db_session):
+    """Regression (CR-01): a wrong-shaped stats bundle (a non-dict where a
+    dict is expected) raises AttributeError inside map_daily_health_to_row.
+    The narrow (KeyError, ValueError, TypeError) catch let it escape the
+    per-day loop and abort the run before the end-only commit, discarding
+    every already-processed day. The malformed day must be skipped and the
+    good days on either side must still be upserted."""
+    days = _synthetic_days(3)
+    # stats is a list instead of a dict -> stats.get(...) raises AttributeError.
+    days["2026-01-02"]["stats"] = ["not", "a", "dict"]
+    client = FakeGarminClient(days)
+
+    count = backfill_daily_health(db_session, client, start="2026-01-01", end="2026-01-03")
+
+    assert count == 2
+    assert db_session.query(DailyHealth).count() == 2
+    assert db_session.get(DailyHealth, date(2026, 1, 1)) is not None
+    assert db_session.get(DailyHealth, date(2026, 1, 3)) is not None
+    assert db_session.get(DailyHealth, date(2026, 1, 2)) is None
+
+
 def test_sync_daily_health_window_is_idempotent_and_self_heals(db_session):
     days = _synthetic_days(2)
     client = FakeGarminClient(days)

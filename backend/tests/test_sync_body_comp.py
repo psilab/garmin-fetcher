@@ -152,6 +152,25 @@ def test_sync_window_skips_malformed_entries_without_aborting(db_session):
     assert db_session.query(BodyComposition).count() == 2
 
 
+def test_sync_window_skips_wrong_shaped_entry_without_aborting(db_session):
+    """Regression (CR-01): a wrong-shaped weigh-in (a non-dict, e.g. a bare
+    string) raises AttributeError on ``entry.get`` inside map_body_comp_to_row.
+    The narrow (KeyError, ValueError, TypeError) catch let it escape the loop
+    and abort the run before commit, discarding every already-processed
+    entry. The malformed entry must be skipped and the good ones persisted."""
+    payload = _payload(
+        _entry(1, "2026-01-01"),
+        "not-a-dict",  # non-dict entry -> entry.get raises AttributeError
+        _entry(2, "2026-01-15"),
+    )
+    client = FakeGarminClient(payload)
+
+    count = sync_body_composition_window(db_session, client, "2026-01-01", "2026-01-31")
+
+    assert count == 2
+    assert db_session.query(BodyComposition).count() == 2
+
+
 def test_backfill_body_composition_inserts_rows(db_session):
     client = FakeGarminClient(
         _payload(_entry(1, "2026-01-01"), _entry(2, "2026-01-15"))

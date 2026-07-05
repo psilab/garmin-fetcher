@@ -98,10 +98,15 @@ def sync_body_composition_window(
     for entry in _iter_weigh_in_entries(payload):
         try:
             row = map_body_comp_to_row(entry)
-        except (KeyError, ValueError, TypeError) as exc:
+        except Exception as exc:  # untrusted Garmin JSON: isolate the entry, never abort the run (CR-01)
+            # Broad on purpose (mirrors sleep/daily_health): a non-dict entry
+            # raises AttributeError on ``entry.get``, which a narrow
+            # (KeyError, ValueError, TypeError) tuple would let escape and
+            # abort the whole run. KeyboardInterrupt/SystemExit are
+            # BaseException, so they still propagate.
             skipped += 1
             spk = entry.get("samplePk") if isinstance(entry, dict) else None
-            print(f"[sync:body_composition] skipped weigh-in {spk!r}: {exc}")
+            print(f"[sync:body_composition] skipped weigh-in {spk!r}: {type(exc).__name__}: {exc}")
             continue
         _upsert(session, BodyComposition, row, key="sample_pk")
         count += 1

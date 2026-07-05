@@ -254,6 +254,29 @@ def test_backfill_sleep_skips_malformed_day_without_aborting(db_session, monkeyp
     assert db_session.query(Sleep).count() == 2
 
 
+def test_backfill_sleep_skips_wrong_shaped_day_without_losing_other_days(db_session):
+    """Regression (CR-01): a wrong-shaped Garmin payload raises AttributeError
+    inside map_sleep_to_row (e.g. training_readiness[0] is a non-dict). The
+    narrow (KeyError, ValueError, TypeError) catch let it ESCAPE the per-day
+    loop, aborting the run before the end-only commit and discarding every
+    already-processed day. The malformed day must be skipped and the other
+    good days must still be upserted."""
+    days = _synthetic_days(3)
+    # First element is a bare int, not a dict -> (list[0] or {}).get raises
+    # AttributeError, the exact shape-drift the narrow catch missed.
+    days["2026-01-02"]["training_readiness"] = [42]
+    client = FakeGarminClient(days)
+
+    count = backfill_sleep(db_session, client, start="2026-01-01", end="2026-01-03")
+
+    assert count == 2
+    assert db_session.query(Sleep).count() == 2
+    # The two good days on either side of the malformed one persisted.
+    assert db_session.get(Sleep, date(2026, 1, 1)) is not None
+    assert db_session.get(Sleep, date(2026, 1, 3)) is not None
+    assert db_session.get(Sleep, date(2026, 1, 2)) is None
+
+
 def test_sync_sleep_window_is_idempotent_and_self_heals(db_session):
     days = _synthetic_days(2)
     client = FakeGarminClient(days)
