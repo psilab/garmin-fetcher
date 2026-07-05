@@ -17,7 +17,7 @@ import pytest
 # be set before the first import of app.mcp.server regardless of test order).
 os.environ.setdefault("MCP_TOKEN", "test-secret-for-tool-tests")
 
-from app.models import Workout
+from app.models import Sleep, Workout
 
 
 @pytest.fixture(autouse=True)
@@ -161,3 +161,92 @@ def test_filter_workouts_rejects_start_after_end(db_session):
 
     with pytest.raises(ValueError):
         filter_workouts(start=date(2026, 2, 1), end=date(2026, 1, 1))
+
+
+def _make_sleep(day, sleep_score=80, **overrides):
+    defaults = dict(
+        date=day,
+        sleep_score=sleep_score,
+        deep_s=4380.0,
+        light_s=19500.0,
+        rem_s=9420.0,
+        awake_s=0.0,
+        hrv_avg=34.0,
+        body_battery_high=84,
+        body_battery_low=39,
+        training_readiness=55,
+        training_status="PRODUCTIVE",
+        raw="{}",
+    )
+    defaults.update(overrides)
+    return Sleep(**defaults)
+
+
+def test_list_recent_sleep_orders_newest_first(db_session):
+    from app.mcp.server import list_recent_sleep
+
+    db_session.add_all(
+        [
+            _make_sleep(date(2026, 1, 1)),
+            _make_sleep(date(2026, 1, 3)),
+            _make_sleep(date(2026, 1, 2)),
+        ]
+    )
+    db_session.commit()
+
+    result = list_recent_sleep(limit=2)
+
+    assert [s["date"] for s in result] == [date(2026, 1, 3), date(2026, 1, 2)]
+
+
+def test_list_recent_sleep_excludes_raw(db_session):
+    from app.mcp.server import list_recent_sleep
+
+    db_session.add(_make_sleep(date(2026, 1, 1)))
+    db_session.commit()
+
+    result = list_recent_sleep(limit=1)
+
+    assert "raw" not in result[0]
+
+
+def test_filter_sleep_by_date_range(db_session):
+    from app.mcp.server import filter_sleep
+
+    db_session.add_all(
+        [
+            _make_sleep(date(2026, 1, 1)),
+            _make_sleep(date(2026, 2, 1)),
+            _make_sleep(date(2026, 1, 15)),
+        ]
+    )
+    db_session.commit()
+
+    result = filter_sleep(start=date(2026, 1, 1), end=date(2026, 1, 31))
+
+    assert sorted(s["date"] for s in result) == [date(2026, 1, 1), date(2026, 1, 15)]
+
+
+def test_filter_sleep_rejects_start_after_end(db_session):
+    from app.mcp.server import filter_sleep
+
+    with pytest.raises(ValueError):
+        filter_sleep(start=date(2026, 2, 1), end=date(2026, 1, 1))
+
+
+def test_aggregate_sleep_totals(db_session):
+    from app.mcp.server import aggregate_sleep
+
+    db_session.add_all(
+        [
+            _make_sleep(date(2026, 1, 1), sleep_score=80, hrv_avg=30.0),
+            _make_sleep(date(2026, 1, 2), sleep_score=90, hrv_avg=40.0),
+        ]
+    )
+    db_session.commit()
+
+    result = aggregate_sleep(start=date(2026, 1, 1), end=date(2026, 1, 31))
+
+    assert result["count"] == 2
+    assert result["avg_sleep_score"] == pytest.approx(85.0)
+    assert result["avg_hrv"] == pytest.approx(35.0)

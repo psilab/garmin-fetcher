@@ -16,7 +16,7 @@ from sqlalchemy import func, select
 from starlette.middleware import Middleware
 
 from ..db import SessionLocal
-from ..models import Workout
+from ..models import Sleep, Workout
 from .auth import BearerAuthMiddleware
 
 mcp = FastMCP("Garmin Coach")
@@ -135,6 +135,99 @@ def compare_periods(
         return {
             "period_a": _aggregate(session, activity_type, period_a_start, period_a_end),
             "period_b": _aggregate(session, activity_type, period_b_start, period_b_end),
+        }
+    finally:
+        session.close()
+
+
+# --- Sleep tools (D-07 -- list/filter/aggregate, mirroring the workout trio) ---
+
+# Excludes `raw` -- the coach doesn't need the raw Garmin sleep JSON, and
+# `raw` may carry PII/intraday detail (T-02-06 mitigation).
+_SLEEP_SUMMARY_COLUMNS = (
+    "date",
+    "sleep_score",
+    "deep_s",
+    "light_s",
+    "rem_s",
+    "awake_s",
+    "hrv_avg",
+    "body_battery_high",
+    "body_battery_low",
+    "training_readiness",
+    "training_status",
+    "synced_at",
+)
+
+
+def _sleep_to_dict(sleep: Sleep) -> dict:
+    return {col: getattr(sleep, col) for col in _SLEEP_SUMMARY_COLUMNS}
+
+
+def _apply_date_filters(stmt, col, start: date | None, end: date | None):
+    """Parameterized date-range filter only -- never string-format user
+    input into SQL (T-02-04, generalized from Workout's ``_apply_filters``)."""
+    _validate_range(start, end)
+    if start is not None:
+        stmt = stmt.where(col >= start)
+    if end is not None:
+        stmt = stmt.where(col <= end)
+    return stmt
+
+
+@mcp.tool
+def list_recent_sleep(limit: int = 10) -> list[dict]:
+    """Most recent nights of sleep/recovery data, newest first."""
+    session = SessionLocal()
+    try:
+        stmt = select(Sleep).order_by(Sleep.date.desc()).limit(limit)
+        return [_sleep_to_dict(s) for s in session.execute(stmt).scalars().all()]
+    finally:
+        session.close()
+
+
+@mcp.tool
+def filter_sleep(start: date | None = None, end: date | None = None) -> list[dict]:
+    """Sleep/recovery rows within an inclusive date range."""
+    session = SessionLocal()
+    try:
+        stmt = _apply_date_filters(select(Sleep), Sleep.date, start, end)
+        stmt = stmt.order_by(Sleep.date.desc())
+        return [_sleep_to_dict(s) for s in session.execute(stmt).scalars().all()]
+    finally:
+        session.close()
+
+
+@mcp.tool
+def aggregate_sleep(start: date | None = None, end: date | None = None) -> dict:
+    """Count + averages (sleep score, HRV, body battery, training
+    readiness) over a filtered set of nights."""
+    session = SessionLocal()
+    try:
+        stmt = select(
+            func.count(Sleep.date),
+            func.avg(Sleep.sleep_score),
+            func.avg(Sleep.hrv_avg),
+            func.avg(Sleep.body_battery_high),
+            func.avg(Sleep.body_battery_low),
+            func.avg(Sleep.training_readiness),
+        )
+        stmt = _apply_date_filters(stmt, Sleep.date, start, end)
+        (
+            count,
+            avg_sleep_score,
+            avg_hrv,
+            avg_body_battery_high,
+            avg_body_battery_low,
+            avg_training_readiness,
+        ) = session.execute(stmt).one()
+        return {
+            "count": count or 0,
+            "avg_sleep_score": avg_sleep_score,
+            "avg_hrv": avg_hrv,
+            "avg_body_battery_high": avg_body_battery_high,
+            "avg_body_battery_low": avg_body_battery_low,
+            "avg_training_readiness": avg_training_readiness,
         }
     finally:
         session.close()
