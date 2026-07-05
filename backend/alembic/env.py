@@ -15,8 +15,13 @@ config = context.config
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
+# disable_existing_loggers=False so importing/running this env (e.g. an
+# in-process migration, or the migrations test suite) does NOT disable
+# already-configured application loggers such as ``app.sync.scheduler`` --
+# otherwise the self-healing scheduler's INFO observability would be
+# silently switched off (Plan 02-05).
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 # add your model's MetaData object here
 # for 'autogenerate' support

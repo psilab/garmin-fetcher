@@ -14,6 +14,19 @@ from .garmin import NotAuthenticated, get_client
 from .mcp.server import mcp_app
 from .sync.scheduler import build_scheduler
 
+# Observability for the in-app self-healing scheduler (Plan 02-05): uvicorn
+# does not configure the root logger, so app + APScheduler INFO records
+# (e.g. run_daily_sync's "[sync:scheduler] ... synced N rows") are silently
+# dropped (root defaults to WARNING). Configure once, at INFO, to stdout.
+# basicConfig is idempotent (no-op if the root logger already has handlers),
+# and uvicorn's own loggers keep propagate=False so access logs are not
+# duplicated into this stream.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+logging.getLogger("apscheduler").setLevel(logging.INFO)
+
 logger = logging.getLogger(__name__)
 
 

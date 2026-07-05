@@ -7,6 +7,8 @@ domain raising does not stop the other two, and no exception escapes;
 domain's full backfill.
 """
 
+import logging
+
 import app.sync.scheduler as scheduler_mod
 from app.sync.scheduler import build_scheduler, run_daily_sync
 
@@ -93,3 +95,48 @@ def test_run_daily_sync_falls_back_to_backfill_on_empty_table(monkeypatch, db_se
 
     assert called["backfill"] is True
     assert called["window"] is False
+
+
+def test_run_daily_sync_emits_observable_info_log_per_domain(monkeypatch, db_session):
+    """A self-healing background sync must be observable (Plan 02-05): each
+    domain's completion is logged at INFO so a production run can be
+    confirmed/diagnosed. Regression guard for the silent-logger gap.
+
+    Attaches a capturing handler directly to the module logger (rather than
+    relying on caplog's root propagation) and asserts the module logger is
+    not left disabled -- a regression guard against Alembic's env.py
+    disabling app loggers via fileConfig(disable_existing_loggers=True)."""
+    monkeypatch.setattr(scheduler_mod, "get_client", lambda: object())
+    monkeypatch.setattr(scheduler_mod, "SessionLocal", lambda: db_session)
+    monkeypatch.setattr(db_session, "close", lambda: None)
+
+    monkeypatch.setattr(
+        scheduler_mod,
+        "_DOMAIN_REGISTRY",
+        [(scheduler_mod.Sleep, lambda *a: 0, lambda session, client: 7, "sleep")],
+    )
+
+    assert not scheduler_mod.logger.disabled  # not switched off by a prior test
+
+    records: list[logging.LogRecord] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record):
+            records.append(record)
+
+    handler = _Capture(level=logging.INFO)
+    scheduler_mod.logger.addHandler(handler)
+    original_level = scheduler_mod.logger.level
+    scheduler_mod.logger.setLevel(logging.INFO)
+    try:
+        run_daily_sync()
+    finally:
+        scheduler_mod.logger.removeHandler(handler)
+        scheduler_mod.logger.setLevel(original_level)
+
+    assert any(
+        rec.levelno == logging.INFO
+        and "[sync:scheduler]" in rec.getMessage()
+        and "sleep" in rec.getMessage()
+        for rec in records
+    )
