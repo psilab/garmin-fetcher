@@ -27,3 +27,11 @@ def db_session():
 def sample_activity():
     with open(FIXTURES_DIR / "sample_activity.json") as f:
         return json.load(f)
+
+
+@pytest.fixture
+def sample_sleep():
+    """Live-captured {"sleep": get_sleep_data(...), "body_battery":
+    get_body_battery(...)} payload (see Plan 02-01's capture_fixtures.py)."""
+    with open(FIXTURES_DIR / "sample_sleep.json") as f:
+        return json.load(f)
