@@ -13,6 +13,7 @@ import sys
 
 from app.db import SessionLocal
 from app.garmin import NotAuthenticated, get_client
+from app.sync.daily_health import backfill_daily_health
 from app.sync.sleep import backfill_sleep
 from app.sync.workouts import backfill_workouts
 
@@ -23,6 +24,10 @@ def main(argv: list[str] | None = None) -> int:
     subparsers.add_parser("backfill", help="Full-history backfill of Garmin workouts into SQLite")
     subparsers.add_parser(
         "backfill-sleep", help="Full-history backfill of Garmin sleep & recovery into SQLite"
+    )
+    subparsers.add_parser(
+        "backfill-daily-health",
+        help="Full-history backfill of Garmin all-day health into SQLite",
     )
 
     args = parser.parse_args(argv)
@@ -57,6 +62,22 @@ def main(argv: list[str] | None = None) -> int:
             session.close()
 
         print(f"Synced {count} sleep days.")
+        return 0
+
+    if args.command == "backfill-daily-health":
+        try:
+            client = get_client()
+        except NotAuthenticated as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+
+        session = SessionLocal()
+        try:
+            count = backfill_daily_health(session, client)
+        finally:
+            session.close()
+
+        print(f"Synced {count} daily-health days.")
         return 0
 
     return 1

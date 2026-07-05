@@ -35,3 +35,11 @@ def sample_sleep():
     get_body_battery(...)} payload (see Plan 02-01's capture_fixtures.py)."""
     with open(FIXTURES_DIR / "sample_sleep.json") as f:
         return json.load(f)
+
+
+@pytest.fixture
+def sample_daily_health():
+    """Live-captured get_stats(cdate) bundle (see Plan 02-01's
+    capture_fixtures.py) -- the PRIMARY daily-health getter."""
+    with open(FIXTURES_DIR / "sample_daily_health.json") as f:
+        return json.load(f)
