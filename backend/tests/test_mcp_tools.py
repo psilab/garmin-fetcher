@@ -17,7 +17,7 @@ import pytest
 # be set before the first import of app.mcp.server regardless of test order).
 os.environ.setdefault("MCP_TOKEN", "test-secret-for-tool-tests")
 
-from app.models import DailyHealth, Sleep, Workout
+from app.models import BodyComposition, DailyHealth, Sleep, Workout
 
 
 @pytest.fixture(autouse=True)
@@ -336,3 +336,94 @@ def test_aggregate_daily_health_totals(db_session):
     assert result["count"] == 2
     assert result["avg_total_steps"] == pytest.approx(6000.0)
     assert result["avg_resting_hr"] == pytest.approx(55.0)
+
+
+def _make_body_comp(sample_pk, day, weight_g=75000.0, **overrides):
+    defaults = dict(
+        sample_pk=sample_pk,
+        date=day,
+        weight_g=weight_g,
+        body_fat_pct=None,
+        raw="{}",
+    )
+    defaults.update(overrides)
+    return BodyComposition(**defaults)
+
+
+def test_list_recent_body_composition_orders_newest_first(db_session):
+    from app.mcp.server import list_recent_body_composition
+
+    db_session.add_all(
+        [
+            _make_body_comp(1, date(2026, 1, 1)),
+            _make_body_comp(2, date(2026, 1, 3)),
+            _make_body_comp(3, date(2026, 1, 2)),
+        ]
+    )
+    db_session.commit()
+
+    result = list_recent_body_composition(limit=2)
+
+    assert [b["date"] for b in result] == [date(2026, 1, 3), date(2026, 1, 2)]
+
+
+def test_list_recent_body_composition_excludes_raw(db_session):
+    from app.mcp.server import list_recent_body_composition
+
+    db_session.add(_make_body_comp(1, date(2026, 1, 1)))
+    db_session.commit()
+
+    result = list_recent_body_composition(limit=1)
+
+    assert "raw" not in result[0]
+
+
+def test_filter_body_composition_by_date_range(db_session):
+    from app.mcp.server import filter_body_composition
+
+    db_session.add_all(
+        [
+            _make_body_comp(1, date(2026, 1, 1)),
+            _make_body_comp(2, date(2026, 2, 1)),
+            _make_body_comp(3, date(2026, 1, 15)),
+        ]
+    )
+    db_session.commit()
+
+    result = filter_body_composition(start=date(2026, 1, 1), end=date(2026, 1, 31))
+
+    assert sorted(b["date"] for b in result) == [date(2026, 1, 1), date(2026, 1, 15)]
+
+
+def test_filter_body_composition_rejects_start_after_end(db_session):
+    from app.mcp.server import filter_body_composition
+
+    with pytest.raises(ValueError):
+        filter_body_composition(start=date(2026, 2, 1), end=date(2026, 1, 1))
+
+
+def test_aggregate_body_composition_totals(db_session):
+    from app.mcp.server import aggregate_body_composition
+
+    db_session.add_all(
+        [
+            _make_body_comp(1, date(2026, 1, 1), weight_g=75000.0, body_fat_pct=18.0),
+            _make_body_comp(2, date(2026, 1, 2), weight_g=77000.0, body_fat_pct=20.0),
+        ]
+    )
+    db_session.commit()
+
+    result = aggregate_body_composition(start=date(2026, 1, 1), end=date(2026, 1, 31))
+
+    assert result["count"] == 2
+    assert result["avg_weight_g"] == pytest.approx(76000.0)
+    assert result["avg_body_fat_pct"] == pytest.approx(19.0)
+
+
+def test_aggregate_body_composition_zero_rows(db_session):
+    from app.mcp.server import aggregate_body_composition
+
+    result = aggregate_body_composition()
+
+    assert result["count"] == 0
+    assert result["avg_weight_g"] is None

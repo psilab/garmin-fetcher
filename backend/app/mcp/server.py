@@ -16,7 +16,7 @@ from sqlalchemy import func, select
 from starlette.middleware import Middleware
 
 from ..db import SessionLocal
-from ..models import DailyHealth, Sleep, Workout
+from ..models import BodyComposition, DailyHealth, Sleep, Workout
 from .auth import BearerAuthMiddleware
 
 mcp = FastMCP("Garmin Coach")
@@ -314,6 +314,71 @@ def aggregate_daily_health(start: date | None = None, end: date | None = None) -
             "avg_respiration_avg": avg_respiration_avg,
             "avg_intensity_minutes_moderate": avg_intensity_minutes_moderate,
             "avg_intensity_minutes_vigorous": avg_intensity_minutes_vigorous,
+        }
+    finally:
+        session.close()
+
+
+# --- Body-composition tools (DATA-04 -- list/filter/aggregate, mirroring
+# the daily-health trio). Event-grained (keyed on sample_pk, not date), but
+# reads are still filtered/ordered on the non-PK `date` column like every
+# other domain's MCP tools. ---
+
+# Excludes `raw` -- the coach doesn't need the raw Garmin weigh-in JSON
+# (T-02-12 mitigation).
+_BODY_COMP_SUMMARY_COLUMNS = (
+    "sample_pk",
+    "date",
+    "weight_g",
+    "body_fat_pct",
+    "synced_at",
+)
+
+
+def _body_comp_to_dict(body_comp: BodyComposition) -> dict:
+    return {col: getattr(body_comp, col) for col in _BODY_COMP_SUMMARY_COLUMNS}
+
+
+@mcp.tool
+def list_recent_body_composition(limit: int = 10) -> list[dict]:
+    """Most recent weigh-in events, newest first."""
+    session = SessionLocal()
+    try:
+        stmt = select(BodyComposition).order_by(BodyComposition.date.desc()).limit(limit)
+        return [_body_comp_to_dict(b) for b in session.execute(stmt).scalars().all()]
+    finally:
+        session.close()
+
+
+@mcp.tool
+def filter_body_composition(start: date | None = None, end: date | None = None) -> list[dict]:
+    """Weigh-in events within an inclusive date range."""
+    session = SessionLocal()
+    try:
+        stmt = _apply_date_filters(select(BodyComposition), BodyComposition.date, start, end)
+        stmt = stmt.order_by(BodyComposition.date.desc())
+        return [_body_comp_to_dict(b) for b in session.execute(stmt).scalars().all()]
+    finally:
+        session.close()
+
+
+@mcp.tool
+def aggregate_body_composition(start: date | None = None, end: date | None = None) -> dict:
+    """Count + averages (weight, body fat %) over a filtered set of
+    weigh-in events."""
+    session = SessionLocal()
+    try:
+        stmt = select(
+            func.count(BodyComposition.sample_pk),
+            func.avg(BodyComposition.weight_g),
+            func.avg(BodyComposition.body_fat_pct),
+        )
+        stmt = _apply_date_filters(stmt, BodyComposition.date, start, end)
+        count, avg_weight_g, avg_body_fat_pct = session.execute(stmt).one()
+        return {
+            "count": count or 0,
+            "avg_weight_g": avg_weight_g,
+            "avg_body_fat_pct": avg_body_fat_pct,
         }
     finally:
         session.close()
