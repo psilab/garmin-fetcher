@@ -34,6 +34,10 @@ def main(argv: list[str] | None = None) -> int:
         "backfill-body-composition",
         help="Full-history backfill of Garmin weigh-ins / body composition into SQLite",
     )
+    subparsers.add_parser(
+        "backfill-all",
+        help="Full-history backfill of every domain (sleep, daily-health, body-composition) into SQLite",
+    )
 
     args = parser.parse_args(argv)
 
@@ -99,6 +103,26 @@ def main(argv: list[str] | None = None) -> int:
             session.close()
 
         print(f"Synced {count} weigh-in events.")
+        return 0
+
+    if args.command == "backfill-all":
+        try:
+            client = get_client()
+        except NotAuthenticated as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+
+        session = SessionLocal()
+        try:
+            sleep_count = backfill_sleep(session, client)
+            daily_health_count = backfill_daily_health(session, client)
+            body_comp_count = backfill_body_composition(session, client)
+        finally:
+            session.close()
+
+        print(f"Synced {sleep_count} sleep days.")
+        print(f"Synced {daily_health_count} daily-health days.")
+        print(f"Synced {body_comp_count} weigh-in events.")
         return 0
 
     return 1

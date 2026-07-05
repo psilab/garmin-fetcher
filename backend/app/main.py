@@ -3,6 +3,8 @@
 Serves your own Garmin Connect activity data as JSON.
 """
 
+import logging
+from contextlib import asynccontextmanager
 from datetime import date, timedelta
 
 from fastapi import FastAPI, HTTPException, Query
@@ -10,11 +12,28 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .garmin import NotAuthenticated, get_client
 from .mcp.server import mcp_app
+from .sync.scheduler import build_scheduler
 
-# RESEARCH.md Pattern 1 / Pitfall 1: mcp_app.lifespan MUST be passed through
-# to the parent FastAPI app, or the MCP session manager's task group never
-# initializes and every /mcp request hangs or fails with a RuntimeError.
-app = FastAPI(title="Garmin Fetcher", version="0.1.0", lifespan=mcp_app.lifespan)
+logger = logging.getLogger(__name__)
+
+
+# RESEARCH.md Pattern 3 / Phase 1 Pitfall 1: the scheduler must be composed
+# INTO the lifespan, not replace it -- dropping mcp_app's lifespan makes
+# every /mcp request hang or fail with a RuntimeError (the MCP session
+# manager's task group never initializes). The `async with` line below,
+# entering mcp_app's own lifespan context, is the load-bearing line (T-02-16).
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    scheduler = build_scheduler()
+    scheduler.start()
+    try:
+        async with mcp_app.lifespan(app):  # MUST keep -- MCP session manager
+            yield
+    finally:
+        scheduler.shutdown(wait=False)  # graceful stop on app shutdown
+
+
+app = FastAPI(title="Garmin Fetcher", version="0.2.0", lifespan=lifespan)
 
 # PoC: allow the Next.js frontend (any origin) to call us.
 # Scoped only to this parent app -- the /mcp mount below carries its own

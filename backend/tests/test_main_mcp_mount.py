@@ -1,4 +1,5 @@
-"""Tests for mounting the Plan 03 MCP sub-app into the FastAPI app (Plan 04).
+"""Tests for mounting the Plan 03 MCP sub-app into the FastAPI app (Plan 04),
+extended in Plan 05 to cover the composed scheduler+MCP lifespan.
 
 Covers RESEARCH.md Pitfall 1 (lifespan passthrough) and Open Question 2
 (bearer middleware scoped only to /mcp, REST stays unauthenticated).
@@ -63,3 +64,41 @@ async def test_lifespan_starts_without_hanging():
                 timeout=5,
             )
     assert response.status_code != 401
+
+
+@pytest.mark.anyio
+async def test_composed_lifespan_starts_and_stops_the_scheduler(monkeypatch):
+    """Plan 05: the composed lifespan (scheduler + mcp_app.lifespan) starts
+    a running BackgroundScheduler on entry and shuts it down cleanly on
+    exit, while the MCP mount keeps responding under it (proves the
+    scheduler wrapper doesn't drop mcp_app.lifespan -- T-02-16)."""
+    import app.main as main_mod
+
+    calls = {"started": False, "shutdown": False}
+
+    class FakeScheduler:
+        def start(self):
+            calls["started"] = True
+
+        def shutdown(self, wait=False):
+            calls["shutdown"] = True
+
+    monkeypatch.setattr(main_mod, "build_scheduler", lambda: FakeScheduler())
+
+    transport = httpx.ASGITransport(app=app)
+    async with app.router.lifespan_context(app):
+        assert calls["started"] is True
+        assert calls["shutdown"] is False
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await asyncio.wait_for(
+                client.post(
+                    "/mcp/",
+                    json={},
+                    headers={"Authorization": f"Bearer {MCP_TOKEN}"},
+                ),
+                timeout=5,
+            )
+        assert response.status_code != 401
+    # After the lifespan context exits, the scheduler must be shut down --
+    # regression guard against a leaked background thread.
+    assert calls["shutdown"] is True
