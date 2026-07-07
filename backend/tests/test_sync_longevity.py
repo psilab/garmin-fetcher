@@ -130,6 +130,68 @@ def test_map_longevity_to_row_degrades_malformed_training_status():
         assert row["fitness_age"] == 26
 
 
+def test_map_longevity_to_row_degrades_malformed_fitness_age():
+    # WR-01 regression: a non-numeric fitnessAge must degrade to None
+    # instead of persisting the raw string (crashes get_trend at read time).
+    max_metrics = [
+        {
+            "generic": {
+                "calendarDate": "2026-01-01",
+                "vo2MaxValue": 43.0,
+                "fitnessAge": "N/A",
+            }
+        }
+    ]
+    training_status = _training_status_payload(training_load=335)
+
+    row = map_longevity_to_row(max_metrics, training_status, "2026-01-01")
+
+    assert row["fitness_age"] is None
+    assert row["vo2max"] == 43.0
+    assert row["training_load"] == 335
+
+
+def test_map_longevity_to_row_degrades_malformed_training_load():
+    # WR-01 regression: a non-numeric dailyTrainingLoadAcute must degrade
+    # to None instead of persisting the raw string.
+    max_metrics = _max_metrics_payload(vo2max=43.0, fitness_age=26, cdate="2026-01-01")
+    training_status = {
+        "mostRecentTrainingStatus": {
+            "latestTrainingStatusData": {
+                "3476168089": {
+                    "acuteTrainingLoadDTO": {"dailyTrainingLoadAcute": "unknown"}
+                }
+            }
+        }
+    }
+
+    row = map_longevity_to_row(max_metrics, training_status, "2026-01-01")
+
+    assert row["training_load"] is None
+    assert row["vo2max"] == 43.0
+    assert row["fitness_age"] == 26
+
+
+def test_map_longevity_to_row_falls_through_to_second_device_for_training_load():
+    # WR-05 regression: the first device lacking acuteTrainingLoadDTO must
+    # not stop the scan -- a later device's real value should be used.
+    max_metrics = _max_metrics_payload(vo2max=43.0, fitness_age=26, cdate="2026-01-01")
+    training_status = {
+        "mostRecentTrainingStatus": {
+            "latestTrainingStatusData": {
+                "device-without-load": {"acuteTrainingLoadDTO": {}},
+                "device-with-load": {
+                    "acuteTrainingLoadDTO": {"dailyTrainingLoadAcute": 512}
+                },
+            }
+        }
+    }
+
+    row = map_longevity_to_row(max_metrics, training_status, "2026-01-01")
+
+    assert row["training_load"] == 512
+
+
 # --- backfill_longevity / sync_longevity_window -----------------------------
 
 
@@ -189,6 +251,67 @@ def test_sync_longevity_window_is_idempotent_and_self_heals(db_session):
     assert db_session.query(LongevityMarker).count() == 2  # no duplicates
     updated = db_session.get(LongevityMarker, date(2026, 1, 1))
     assert updated.vo2max == 50.0
+
+
+def test_backfill_longevity_skips_day_on_upsert_failure_without_aborting_run(db_session, monkeypatch):
+    """WR-04 regression: an _upsert failure for one day must be skipped
+    (not inserted), never aborting the run -- the other days still persist."""
+    import app.sync.longevity as longevity_mod
+
+    real_upsert = longevity_mod._upsert
+
+    def fake_upsert(session, model, row, key):
+        if row["date"] == date(2026, 1, 2):
+            raise Exception("db error")
+        return real_upsert(session, model, row, key)
+
+    monkeypatch.setattr(longevity_mod, "_upsert", fake_upsert)
+
+    client = FakeGarminClient(_synthetic_days(3))
+
+    count = backfill_longevity(db_session, client, start="2026-01-01", end="2026-01-03")
+
+    assert count == 2
+    assert db_session.get(LongevityMarker, date(2026, 1, 1)) is not None
+    assert db_session.get(LongevityMarker, date(2026, 1, 2)) is None
+    assert db_session.get(LongevityMarker, date(2026, 1, 3)) is not None
+
+
+def test_backfill_longevity_rolls_back_and_persists_later_days_on_real_db_error(db_session, monkeypatch):
+    """WR-04 rollback regression: a genuine DB-level failure (not a plain
+    Python raise) mid-loop must be rolled back so the session stays usable
+    -- every subsequent good day still persists and is queryable AFTER the
+    run. This test fails if session.rollback() is removed from the except
+    handler (PendingRollbackError cascades into later days/final commit)."""
+    import app.sync.longevity as longevity_mod
+
+    real_upsert = longevity_mod._upsert
+
+    def fake_upsert(session, model, row, key):
+        if row["date"] == date(2026, 1, 2):
+            # A genuine ORM-level failure against the live test session
+            # (not a plain Python raise): two ORM-tracked inserts for the
+            # same primary key within one flush raise a real
+            # IntegrityError, which puts the Session itself into a
+            # pending-rollback state -- the same failure mode a real
+            # constraint violation or driver error would produce.
+            session.add(model(date=row["date"], vo2max=1.0, fitness_age=None, training_load=None, raw="{}"))
+            session.flush()
+            session.add(model(date=row["date"], vo2max=2.0, fitness_age=None, training_load=None, raw="{}"))
+            session.flush()
+            return
+        return real_upsert(session, model, row, key)
+
+    monkeypatch.setattr(longevity_mod, "_upsert", fake_upsert)
+
+    client = FakeGarminClient(_synthetic_days(3))
+
+    count = backfill_longevity(db_session, client, start="2026-01-01", end="2026-01-03")
+
+    assert count == 2
+    assert db_session.get(LongevityMarker, date(2026, 1, 1)) is not None
+    assert db_session.get(LongevityMarker, date(2026, 1, 3)) is not None
+    assert db_session.get(LongevityMarker, date(2026, 1, 2)) is None
 
 
 def test_backfill_longevity_throttles_inside_the_loop(db_session, monkeypatch):

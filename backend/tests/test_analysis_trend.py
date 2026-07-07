@@ -1,6 +1,7 @@
 """Unit tests for compute_trend against synthetic rows -- no DB session, no
 SQLAlchemy (D-04's pure-function requirement flowing into a pure unit test)."""
 
+import json
 from datetime import date, timedelta
 
 from app.analysis.trend import compute_trend
@@ -60,3 +61,20 @@ def test_compute_trend_normal_latest_point_not_flagged():
     result = compute_trend(rows, window_days=30)
 
     assert result["deviation"] == "normal"
+
+
+def test_compute_trend_constant_series_returns_none_not_nan():
+    # CR-01a regression: a zero-variance y series makes scipy's linregress
+    # return nan for r_value/p_value (correlation is undefined when y has
+    # no variance), which must degrade to None -- never a raw NaN token
+    # that breaks json.dumps(allow_nan=False)/strict MCP clients. slope
+    # itself is a real, finite 0.0 for a flat series (Sxy=0/Sxx), so it is
+    # correctly left untouched by the guard.
+    rows = [(date(2026, 1, 1) + timedelta(days=i), 50.0) for i in range(10)]
+
+    result = compute_trend(rows)
+
+    assert result["slope"] == 0.0
+    assert result["r_value"] is None
+    assert result["p_value"] is None
+    json.dumps(result, allow_nan=False)

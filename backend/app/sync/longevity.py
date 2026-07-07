@@ -44,6 +44,19 @@ from app.sync.common import _daterange, _upsert
 _DEFAULT_THROTTLE = 0.4
 
 
+def _num_or_none(v, cast):
+    """Degrade a malformed/non-numeric Garmin value to None instead of
+    persisting an untyped value that crashes get_trend's
+    np.array(..., dtype=float) at read time (WR-01) -- same shape as the
+    existing vo2max float(...) try/except below."""
+    if v is None:
+        return None
+    try:
+        return cast(v)
+    except (TypeError, ValueError):
+        return None
+
+
 def map_longevity_to_row(max_metrics: list | dict | None, training_status: dict | None, cdate: str) -> dict:
     """Map a per-day ``get_max_metrics`` + ``get_training_status`` payload
     pair onto a ``LongevityMarker`` row dict.
@@ -76,7 +89,7 @@ def map_longevity_to_row(max_metrics: list | dict | None, training_status: dict 
         except (TypeError, ValueError):
             vo2max = None
 
-    fitness_age = generic.get("fitnessAge")
+    fitness_age = _num_or_none(generic.get("fitnessAge"), int)
 
     training_load = None
     try:
@@ -85,10 +98,13 @@ def map_longevity_to_row(max_metrics: list | dict | None, training_status: dict 
         ).get("latestTrainingStatusData") or {}
         for device_data in device_map.values():
             acute = (device_data or {}).get("acuteTrainingLoadDTO") or {}
-            training_load = acute.get("dailyTrainingLoadAcute")
-            break
+            val = acute.get("dailyTrainingLoadAcute")
+            if val is not None:
+                training_load = val
+                break
     except (AttributeError, TypeError):
         training_load = None
+    training_load = _num_or_none(training_load, float)
 
     raw = json.dumps(
         {"max_metrics": max_metrics, "training_status": training_status}, sort_keys=True
@@ -114,6 +130,13 @@ def _iter_longevity_days(
     skipped and logged, never aborting the whole run (CR-01). Days with
     no data from either getter are skipped without counting as an error
     (mirrors the "no data that day" precedent in daily_health.py).
+
+    Commits per day (not once at the end like the other domains) so that
+    ``session.rollback()`` in the except handler below only ever discards
+    the CURRENT failing day's uncommitted work -- never a previously
+    successful day's already-upserted row, which is durable the moment
+    its commit returns (WR-04's must-have: "every subsequent day in the
+    same CLI backfill run still persists").
     """
     start_date = date.fromisoformat(start)
     end_date = date.fromisoformat(end)
@@ -129,17 +152,26 @@ def _iter_longevity_days(
             if not max_metrics and not training_status:
                 continue
             row = map_longevity_to_row(max_metrics, training_status, cdate)
-        except Exception as exc:  # untrusted Garmin JSON: isolate the day, never abort the run (CR-01)
+            _upsert(session, LongevityMarker, row, key="date")
+            session.commit()
+            count += 1
+        except Exception as exc:  # untrusted Garmin JSON / DB upsert: isolate the day, never abort the run (CR-01/WR-04)
             skipped += 1
             print(f"[sync:longevity] skipped {cdate}: {type(exc).__name__}: {exc}")
+            # A genuine DB-level upsert failure leaves the session in a
+            # pending-rollback state; without this, the NEXT day's
+            # _upsert (or the final session.commit()) would itself raise,
+            # cascading one bad day into aborting the whole run despite
+            # the try/except (WR-04, matches scheduler.py's per-domain
+            # rollback shape). Safe to call unconditionally here because
+            # each day now commits its own work immediately above, so
+            # there is never a PRIOR day's uncommitted row still pending
+            # to be discarded by this rollback.
+            session.rollback()
             continue
         finally:
             time.sleep(throttle)
 
-        _upsert(session, LongevityMarker, row, key="date")
-        count += 1
-
-    session.commit()
     if skipped:
         print(f"[sync:longevity] window complete: {count} upserted, {skipped} skipped")
     return count

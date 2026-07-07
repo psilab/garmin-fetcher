@@ -3,6 +3,7 @@
 No ORM/DB-layer import anywhere in this file.
 """
 
+import math
 from datetime import timedelta
 
 from scipy.stats import spearmanr
@@ -32,6 +33,20 @@ def compute_correlation(rows_a: list[tuple], rows_b: list[tuple], lag_days: int 
 
     xs, ys = zip(*pairs)
     rho, p = spearmanr(xs, ys)
+
+    if not math.isfinite(rho):
+        # A zero-variance series (e.g. a flat metric) makes spearmanr
+        # return nan -- json.dumps(float("nan")) is invalid JSON per RFC
+        # 8259, and letting it fall through the strength ladder below
+        # would misleadingly label an undefined correlation "weak"
+        # (CR-01b).
+        return {
+            "correlation": None,
+            "p_value": None,
+            "count": len(pairs),
+            "lag_days": lag_days,
+            "note": "undefined_constant_series",
+        }
 
     if abs(rho) >= 0.6:
         strength = "strong"
