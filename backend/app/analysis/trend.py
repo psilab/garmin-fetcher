@@ -4,10 +4,19 @@ No ORM/DB-layer import anywhere in this file -- callable by both the MCP
 tools and the future scheduler without any DB coupling.
 """
 
+import math
+
 import numpy as np
 from scipy.stats import linregress
 
 from .downsample import downsample
+
+
+def _finite_or_none(x: float) -> float | None:
+    """Guard against NaN/inf leaking into a JSON-RPC response (CR-01a):
+    a zero-variance input series makes scipy return nan for slope/r/p, and
+    json.dumps(float("nan")) emits the invalid-JSON token NaN."""
+    return x if math.isfinite(x) else None
 
 
 def compute_trend(rows: list[tuple], window_days: int | None = None, z_threshold: float = 2.5) -> dict:
@@ -46,9 +55,9 @@ def compute_trend(rows: list[tuple], window_days: int | None = None, z_threshold
 
     return {
         "direction": direction,
-        "slope": float(result.slope),
-        "r_value": float(result.rvalue),
-        "p_value": float(result.pvalue),
+        "slope": _finite_or_none(float(result.slope)),
+        "r_value": _finite_or_none(float(result.rvalue)),
+        "p_value": _finite_or_none(float(result.pvalue)),
         "baseline": baseline,
         "latest": latest,
         "count": len(clean),

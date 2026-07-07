@@ -1,6 +1,7 @@
 """Unit tests for compute_correlation against synthetic rows -- no DB
 session, no SQLAlchemy."""
 
+import json
 from datetime import date, timedelta
 
 from app.analysis.correlate import compute_correlation
@@ -30,3 +31,19 @@ def test_compute_correlation_insufficient_overlap_returns_note_not_garbage():
 
     assert result["correlation"] is None
     assert result["note"] == "insufficient_overlap"
+
+
+def test_compute_correlation_constant_series_returns_undefined_note():
+    # CR-01b regression: two zero-variance series make spearmanr return
+    # nan for rho, which must degrade to an explicit note -- never a raw
+    # NaN token, and never silently mislabeled "weak" strength.
+    base = date(2026, 1, 1)
+    rows_a = [(base + timedelta(days=i), 5.0) for i in range(5)]
+    rows_b = [(base + timedelta(days=i), 9.0) for i in range(5)]
+
+    result = compute_correlation(rows_a, rows_b, lag_days=0)
+
+    assert result["correlation"] is None
+    assert result["p_value"] is None
+    assert result["note"] == "undefined_constant_series"
+    json.dumps(result, allow_nan=False)
