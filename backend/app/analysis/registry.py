@@ -2,14 +2,14 @@
 metadata for the pure analysis functions to fetch and interpret it, without
 per-metric branching anywhere in trend/correlation/anomaly code.
 
-EXACTLY the 7 metrics already backed by existing typed columns. Do NOT add
-`vo2max`/`training_load` here -- no backing column exists yet; those land in
-Plan 03-03 once Plan 03-02's LongevityMarker table exists.
+The original 7 metrics are backed by existing typed columns
+(resting_hr/hrv/sleep_score/stress/steps/weight/body_fat_pct). Plan 03-03
+adds `vo2max`/`training_load`, backed by the `longevity_markers` table.
 """
 
 from dataclasses import dataclass
 
-from ..models import BodyComposition, DailyHealth, Sleep
+from ..models import BodyComposition, DailyHealth, LongevityMarker, Sleep
 
 
 @dataclass(frozen=True)
@@ -28,4 +28,10 @@ METRICS: dict[str, MetricSpec] = {
     "steps": MetricSpec(DailyHealth, "total_steps"),
     "weight": MetricSpec(BodyComposition, "weight_g"),
     "body_fat_pct": MetricSpec(BodyComposition, "body_fat_pct"),
+    # D-05/D-01 correction: backed by the NEW `longevity_markers` table
+    # populated by Plan 03-02's sync, not a backfill from any pre-existing
+    # `raw` payload. 180-day default window for VO2max's longer-arc
+    # trajectory per D-06/RESEARCH.md Pattern 1.
+    "vo2max": MetricSpec(LongevityMarker, "vo2max", default_window_days=180),
+    "training_load": MetricSpec(LongevityMarker, "training_load"),
 }
