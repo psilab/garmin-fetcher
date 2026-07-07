@@ -167,7 +167,7 @@ def test_detect_anomalies_unknown_metric_raises_value_error(db_session):
 
 def _make_body_comp(day, **overrides):
     defaults = dict(
-        sample_pk=f"pk-{day.isoformat()}",
+        sample_pk=int(day.strftime("%Y%m%d")),
         date=day,
         weight_g=70000,
         body_fat_pct=18.0,
