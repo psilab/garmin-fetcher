@@ -456,6 +456,38 @@ def get_correlations(
         session.close()
 
 
+# Fixed D-06 five-marker trajectory set. Deliberately excludes
+# `training_load`: D-06 lists VO2max/HRV/resting-HR/body-composition as the
+# longevity markers, and D-01's correction registers `training_load` as a
+# first-class metric usable via get_trend/get_correlations/detect_anomalies,
+# not as a member of this fixed trajectory set.
+_LONGEVITY_MARKERS = ("vo2max", "hrv", "resting_hr", "weight", "body_fat_pct")
+
+
+@mcp.tool
+def get_longevity_markers(start: date | None = None, end: date | None = None) -> dict:
+    """D-06 fixed five-marker longevity trajectory set (VO2max, HRV,
+    resting HR, weight, body-fat %) -- reuses compute_trend per marker.
+    No `metric` argument reaches this tool (T-03-07): every name comes from
+    the hardcoded `_LONGEVITY_MARKERS` tuple resolved against the same
+    METRICS registry as get_trend."""
+    session = SessionLocal()
+    try:
+        markers = {}
+        for name in _LONGEVITY_MARKERS:
+            spec = _resolve_metric(name)
+            col = getattr(spec.model, spec.column)
+            date_col = getattr(spec.model, spec.date_col)
+            stmt = select(date_col, col)
+            stmt = _apply_date_filters(stmt, date_col, start, end)
+            stmt = stmt.order_by(date_col.asc())
+            rows = session.execute(stmt).all()
+            markers[name] = compute_trend(rows, window_days=spec.default_window_days)
+        return {"markers": markers}
+    finally:
+        session.close()
+
+
 @mcp.tool
 def detect_anomalies(
     metric: str,
