@@ -15,6 +15,10 @@ from fastmcp import FastMCP
 from sqlalchemy import func, select
 from starlette.middleware import Middleware
 
+from ..analysis.anomaly import detect_anomalies as _detect_anomalies
+from ..analysis.correlate import compute_correlation
+from ..analysis.registry import METRICS
+from ..analysis.trend import compute_trend
 from ..db import SessionLocal
 from ..models import BodyComposition, DailyHealth, Sleep, Workout
 from .auth import BearerAuthMiddleware
@@ -380,6 +384,102 @@ def aggregate_body_composition(start: date | None = None, end: date | None = Non
             "avg_weight_g": avg_weight_g,
             "avg_body_fat_pct": avg_body_fat_pct,
         }
+    finally:
+        session.close()
+
+
+# --- Analysis tools (D-02/D-04 -- generic, metric-agnostic; ANLZ-01/02/03).
+# Reuse the Task 1 pure functions + the registry's "raise before touching
+# the DB" gate (T-03-01 mitigation). ---
+
+
+def _resolve_metric(name: str):
+    """Look up ``name`` in the fixed METRICS registry, raising ValueError
+    on any unknown name BEFORE SessionLocal() is opened (V5 input
+    validation, mirrors _validate_range's "raise before DB" shape)."""
+    spec = METRICS.get(name)
+    if spec is None:
+        raise ValueError(f"unknown metric: {name!r}")
+    return spec
+
+
+@mcp.tool
+def get_trend(metric: str, start: date | None = None, end: date | None = None) -> dict:
+    """Trend + rolling baseline + robust deviation verdict for a registered
+    metric over a date range."""
+    spec = _resolve_metric(metric)
+    session = SessionLocal()
+    try:
+        col = getattr(spec.model, spec.column)
+        date_col = getattr(spec.model, spec.date_col)
+        stmt = select(date_col, col)
+        stmt = _apply_date_filters(stmt, date_col, start, end)
+        stmt = stmt.order_by(date_col.asc())
+        rows = session.execute(stmt).all()
+        return compute_trend(rows, window_days=spec.default_window_days)
+    finally:
+        session.close()
+
+
+@mcp.tool
+def get_correlations(
+    metrics: list[str],
+    start: date | None = None,
+    end: date | None = None,
+    lag_days: int = 0,
+) -> dict:
+    """Lagged Spearman correlation between exactly two registered metrics."""
+    if len(metrics) != 2:
+        raise ValueError("get_correlations requires exactly two metric names")
+    spec_a = _resolve_metric(metrics[0])
+    spec_b = _resolve_metric(metrics[1])
+    session = SessionLocal()
+    try:
+        col_a = getattr(spec_a.model, spec_a.column)
+        date_col_a = getattr(spec_a.model, spec_a.date_col)
+        stmt_a = select(date_col_a, col_a)
+        stmt_a = _apply_date_filters(stmt_a, date_col_a, start, end)
+        stmt_a = stmt_a.order_by(date_col_a.asc())
+        rows_a = session.execute(stmt_a).all()
+
+        col_b = getattr(spec_b.model, spec_b.column)
+        date_col_b = getattr(spec_b.model, spec_b.date_col)
+        stmt_b = select(date_col_b, col_b)
+        stmt_b = _apply_date_filters(stmt_b, date_col_b, start, end)
+        stmt_b = stmt_b.order_by(date_col_b.asc())
+        rows_b = session.execute(stmt_b).all()
+
+        result = compute_correlation(rows_a, rows_b, lag_days=lag_days)
+        result.update({"metric_a": metrics[0], "metric_b": metrics[1]})
+        return result
+    finally:
+        session.close()
+
+
+@mcp.tool
+def detect_anomalies(
+    metric: str,
+    start: date | None = None,
+    end: date | None = None,
+    window_days: int | None = None,
+    z_threshold: float = 2.5,
+) -> list[dict]:
+    """Dates in a registered metric's history that are notable outliers
+    vs its rolling median/MAD baseline."""
+    spec = _resolve_metric(metric)
+    session = SessionLocal()
+    try:
+        col = getattr(spec.model, spec.column)
+        date_col = getattr(spec.model, spec.date_col)
+        stmt = select(date_col, col)
+        stmt = _apply_date_filters(stmt, date_col, start, end)
+        stmt = stmt.order_by(date_col.asc())
+        rows = session.execute(stmt).all()
+        return _detect_anomalies(
+            rows,
+            window_days=window_days or spec.default_window_days,
+            z_threshold=z_threshold,
+        )
     finally:
         session.close()
 
