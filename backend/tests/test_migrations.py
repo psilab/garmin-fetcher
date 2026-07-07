@@ -58,6 +58,17 @@ EXPECTED_BODY_COMPOSITION_COLUMNS = {
     "synced_at",
 }
 
+# Phase 3 longevity-marker table (migration 0003). New Garmin sync
+# (VO2max + training_load), not backfilled from any existing raw payload.
+EXPECTED_LONGEVITY_MARKERS_COLUMNS = {
+    "date",
+    "vo2max",
+    "fitness_age",
+    "training_load",
+    "raw",
+    "synced_at",
+}
+
 
 def _migrate_to_head(tmp_path):
     db_path = tmp_path / "migrated.db"
@@ -108,3 +119,26 @@ def test_alembic_downgrade_drops_domain_tables(tmp_path):
     assert "workouts" in table_names
     for table in ("sleep", "daily_health", "body_composition"):
         assert table not in table_names, f"{table} not dropped on downgrade"
+
+
+def test_alembic_upgrade_head_creates_longevity_markers_table(tmp_path):
+    _, engine = _migrate_to_head(tmp_path)
+    inspector = inspect(engine)
+    table_names = set(inspector.get_table_names())
+
+    assert "longevity_markers" in table_names
+    columns = {col["name"] for col in inspector.get_columns("longevity_markers")}
+    assert columns == EXPECTED_LONGEVITY_MARKERS_COLUMNS
+
+
+def test_alembic_downgrade_drops_longevity_markers_while_others_remain(tmp_path):
+    config, engine = _migrate_to_head(tmp_path)
+
+    # Downgrade one revision (0003 -> 0002) should drop only longevity_markers.
+    command.downgrade(config, "0002")
+
+    inspector = inspect(create_engine(str(engine.url)))
+    table_names = set(inspector.get_table_names())
+    assert "longevity_markers" not in table_names
+    for table in ("workouts", "sleep", "daily_health", "body_composition"):
+        assert table in table_names, f"{table} unexpectedly dropped"

@@ -1,10 +1,10 @@
 import json
-from datetime import datetime
+from datetime import date, datetime
 
 import pytest
 from sqlalchemy.exc import IntegrityError
 
-from app.models import Workout
+from app.models import LongevityMarker, Workout
 
 
 def test_wal_pragma_enabled(tmp_path, monkeypatch):
@@ -70,3 +70,22 @@ def test_workout_unique_activity_id(db_session):
     db_session.add(Workout(**common_kwargs))
     with pytest.raises(IntegrityError):
         db_session.commit()
+
+
+def test_longevity_marker_stores_raw_payload(db_session):
+    raw_json = json.dumps({"max_metrics": {"generic": {"vo2MaxValue": 43.0}}})
+    marker = LongevityMarker(
+        date=date(2026, 7, 4),
+        vo2max=43.0,
+        fitness_age=26,
+        training_load=335.0,
+        raw=raw_json,
+    )
+    db_session.add(marker)
+    db_session.commit()
+
+    fetched = db_session.get(LongevityMarker, date(2026, 7, 4))
+    assert fetched.raw == raw_json
+    assert fetched.vo2max == 43.0
+    assert fetched.fitness_age == 26
+    assert fetched.training_load == 335.0

@@ -23,10 +23,11 @@ from apscheduler.triggers.cron import CronTrigger
 
 from app.db import SessionLocal
 from app.garmin import get_client
-from app.models import BodyComposition, DailyHealth, Sleep
+from app.models import BodyComposition, DailyHealth, LongevityMarker, Sleep
 from app.sync.body_composition import backfill_body_composition, sync_body_composition_window
 from app.sync.common import window_for
 from app.sync.daily_health import backfill_daily_health, sync_daily_health_window
+from app.sync.longevity import backfill_longevity, sync_longevity_window
 from app.sync.sleep import backfill_sleep, sync_sleep_window
 
 logger = logging.getLogger(__name__)
@@ -37,6 +38,7 @@ _DOMAIN_REGISTRY = [
     (Sleep, sync_sleep_window, backfill_sleep, "sleep"),
     (DailyHealth, sync_daily_health_window, backfill_daily_health, "daily_health"),
     (BodyComposition, sync_body_composition_window, backfill_body_composition, "body_composition"),
+    (LongevityMarker, sync_longevity_window, backfill_longevity, "longevity"),
 ]
 
 
