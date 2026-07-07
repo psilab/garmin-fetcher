@@ -127,3 +127,7 @@ None - no external service configuration required.
 ---
 *Phase: 03-analysis-engine*
 *Completed: 2026-07-08*
+
+## Self-Check: PASSED
+
+All 6 modified files and the 3 task/summary commit hashes (`c71493e`, `ef320fd`, `89722fa`) verified present on disk / in git log.
