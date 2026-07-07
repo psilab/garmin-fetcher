@@ -12,7 +12,7 @@ import pytest
 # app.mcp.server reads MCP_TOKEN at import time (fails fast if unset).
 os.environ.setdefault("MCP_TOKEN", "test-secret-for-tool-tests")
 
-from app.models import DailyHealth, Sleep
+from app.models import BodyComposition, DailyHealth, LongevityMarker, Sleep
 
 
 @pytest.fixture(autouse=True)
@@ -160,3 +160,88 @@ def test_detect_anomalies_unknown_metric_raises_value_error(db_session):
 
     with pytest.raises(ValueError):
         detect_anomalies(metric="not_a_real_metric")
+
+
+# --- get_longevity_markers (D-06 fixed 5-marker set) ----------------------
+
+
+def _make_body_comp(day, **overrides):
+    defaults = dict(
+        sample_pk=f"pk-{day.isoformat()}",
+        date=day,
+        weight_g=70000,
+        body_fat_pct=18.0,
+        raw="{}",
+    )
+    defaults.update(overrides)
+    return BodyComposition(**defaults)
+
+
+def _make_longevity_marker(day, **overrides):
+    defaults = dict(
+        date=day,
+        vo2max=None,
+        fitness_age=None,
+        training_load=None,
+        raw="{}",
+    )
+    defaults.update(overrides)
+    return LongevityMarker(**defaults)
+
+
+def test_get_longevity_markers_returns_exactly_five_d06_keys(db_session):
+    from app.mcp.server import get_longevity_markers
+
+    base = date(2026, 1, 1)
+    db_session.add_all(
+        [_make_sleep(base + timedelta(days=i)) for i in range(3)]
+    )
+    db_session.add_all(
+        [_make_daily_health(base + timedelta(days=i)) for i in range(3)]
+    )
+    db_session.add_all(
+        [_make_body_comp(base + timedelta(days=i)) for i in range(3)]
+    )
+    # One row has vo2max=None to exercise the insufficient-data path
+    # alongside a fully-populated row.
+    db_session.add_all(
+        [
+            _make_longevity_marker(base, vo2max=None),
+            _make_longevity_marker(base + timedelta(days=1), vo2max=45.0),
+        ]
+    )
+    db_session.commit()
+
+    result = get_longevity_markers()
+
+    assert set(result["markers"].keys()) == {
+        "vo2max",
+        "hrv",
+        "resting_hr",
+        "weight",
+        "body_fat_pct",
+    }
+    assert "training_load" not in result["markers"]
+
+
+def test_get_longevity_markers_degrades_empty_vo2max_range_to_insufficient_data(
+    db_session,
+):
+    from app.mcp.server import get_longevity_markers
+
+    base = date(2026, 1, 1)
+    db_session.add_all(
+        [_make_sleep(base + timedelta(days=i)) for i in range(3)]
+    )
+    db_session.add_all(
+        [_make_daily_health(base + timedelta(days=i)) for i in range(3)]
+    )
+    db_session.add_all(
+        [_make_body_comp(base + timedelta(days=i)) for i in range(3)]
+    )
+    # No LongevityMarker rows at all -- VO2max not yet backfilled.
+    db_session.commit()
+
+    result = get_longevity_markers()
+
+    assert result["markers"]["vo2max"]["direction"] == "insufficient_data"
