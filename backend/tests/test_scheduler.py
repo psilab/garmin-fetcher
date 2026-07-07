@@ -119,6 +119,66 @@ def test_run_daily_sync_rolls_back_so_a_db_error_does_not_cascade(monkeypatch, d
     assert calls["daily_health"] == 1
 
 
+def test_run_daily_sync_isolates_a_fourth_domain_failure(monkeypatch, db_session):
+    """Regression (Plan 03-02): adding a 4th domain (longevity) to
+    _DOMAIN_REGISTRY must not change run_daily_sync's per-domain isolation
+    -- one domain (longevity) raising must not stop sleep/daily_health/
+    body_composition from running, matching the existing 3-domain test."""
+    monkeypatch.setattr(scheduler_mod, "get_client", lambda: object())
+    monkeypatch.setattr(scheduler_mod, "SessionLocal", lambda: db_session)
+    monkeypatch.setattr(db_session, "close", lambda: None)
+
+    calls = {"sleep": 0, "daily_health": 0, "body_composition": 0, "longevity": 0}
+
+    def sleep_backfill(session, client):
+        calls["sleep"] += 1
+        return 1
+
+    def daily_health_backfill(session, client):
+        calls["daily_health"] += 1
+        return 2
+
+    def body_comp_backfill(session, client):
+        calls["body_composition"] += 1
+        return 3
+
+    def longevity_backfill(session, client):
+        raise RuntimeError("simulated longevity failure")
+
+    monkeypatch.setattr(
+        scheduler_mod,
+        "_DOMAIN_REGISTRY",
+        [
+            (scheduler_mod.Sleep, scheduler_mod.sync_sleep_window, sleep_backfill, "sleep"),
+            (
+                scheduler_mod.DailyHealth,
+                scheduler_mod.sync_daily_health_window,
+                daily_health_backfill,
+                "daily_health",
+            ),
+            (
+                scheduler_mod.BodyComposition,
+                scheduler_mod.sync_body_composition_window,
+                body_comp_backfill,
+                "body_composition",
+            ),
+            (
+                scheduler_mod.LongevityMarker,
+                scheduler_mod.sync_longevity_window,
+                longevity_backfill,
+                "longevity",
+            ),
+        ],
+    )
+
+    # Should not raise even though longevity's backfill_fn raises.
+    run_daily_sync()
+
+    assert calls["sleep"] == 1
+    assert calls["daily_health"] == 1
+    assert calls["body_composition"] == 1
+
+
 def test_run_daily_sync_falls_back_to_backfill_on_empty_table(monkeypatch, db_session):
     """window_for returns (None, today) for an empty table -- run_daily_sync
     must call the domain's backfill_* fn, not its sync_*_window fn."""
