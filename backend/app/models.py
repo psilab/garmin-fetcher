@@ -89,6 +89,30 @@ class DailyHealth(Base):
     )
 
 
+class LongevityMarker(Base):
+    """A single day's longevity markers (VO2max, fitness age, training load).
+
+    Keyed on the calendar ``date`` so repeated syncs upsert idempotently.
+    D-05/D-01 correction: unlike Sleep/DailyHealth/BodyComposition (typed
+    columns sourced from ``raw`` payloads already being fetched elsewhere),
+    these columns are populated by a NEW Garmin sync
+    (``app/sync/longevity.py`` calling ``get_max_metrics``/
+    ``get_training_status``), never backfilled from any existing ``raw``
+    payload. Full raw JSON payload is kept (DATA-07).
+    """
+
+    __tablename__ = "longevity_markers"
+
+    date: Mapped[date_] = mapped_column(Date, primary_key=True)
+    vo2max: Mapped[float | None] = mapped_column(Float, nullable=True)
+    fitness_age: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    training_load: Mapped[float | None] = mapped_column(Float, nullable=True)
+    raw: Mapped[str] = mapped_column(Text, nullable=False)
+    synced_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+
 class BodyComposition(Base):
     """A single weigh-in event (body composition).
 
