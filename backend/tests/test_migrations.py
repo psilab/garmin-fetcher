@@ -80,6 +80,18 @@ EXPECTED_JOURNAL_COLUMNS = {
     "created_at",
 }
 
+# Phase 5 goals table (migration 0005). Coach-managed structured state, not a
+# Garmin sync -- mutable in place via update_goal (D-05a).
+EXPECTED_GOALS_COLUMNS = {
+    "id",
+    "description",
+    "target_metric",
+    "target_value",
+    "status",
+    "created_at",
+    "updated_at",
+}
+
 
 def _migrate_to_head(tmp_path):
     db_path = tmp_path / "migrated.db"
@@ -186,6 +198,38 @@ def test_alembic_downgrade_drops_journal_while_others_remain(tmp_path):
         "daily_health",
         "body_composition",
         "longevity_markers",
+    ):
+        assert table in table_names, f"{table} unexpectedly dropped"
+
+
+def test_alembic_upgrade_head_creates_goals_table(tmp_path):
+    _, engine = _migrate_to_head(tmp_path)
+    inspector = inspect(engine)
+    table_names = set(inspector.get_table_names())
+
+    assert "goals" in table_names
+    columns = {col["name"] for col in inspector.get_columns("goals")}
+    assert columns == EXPECTED_GOALS_COLUMNS
+
+
+def test_alembic_downgrade_drops_goals_while_others_remain(tmp_path):
+    config, engine = _migrate_to_head(tmp_path)
+
+    # Downgrade one revision (0005 -> 0004) should drop only goals; all prior
+    # domain tables (including the journal + FTS5 pair) remain.
+    command.downgrade(config, "0004")
+
+    inspector = inspect(create_engine(str(engine.url)))
+    table_names = set(inspector.get_table_names())
+    assert "goals" not in table_names
+    for table in (
+        "workouts",
+        "sleep",
+        "daily_health",
+        "body_composition",
+        "longevity_markers",
+        "journal_entries",
+        "journal_fts",
     ):
         assert table in table_names, f"{table} unexpectedly dropped"
 
