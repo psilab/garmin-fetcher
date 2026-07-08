@@ -2,7 +2,7 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import create_engine, inspect, text
 
 ALEMBIC_INI = Path(__file__).parent.parent / "alembic.ini"
 
@@ -67,6 +67,17 @@ EXPECTED_LONGEVITY_MARKERS_COLUMNS = {
     "training_load",
     "raw",
     "synced_at",
+}
+
+# Phase 4 journal table (migration 0004). Data originates in-app, not from a
+# Garmin sync -- deliberately no `raw` column (D-01).
+EXPECTED_JOURNAL_COLUMNS = {
+    "id",
+    "body",
+    "occurred_at",
+    "end_date",
+    "tags",
+    "created_at",
 }
 
 
@@ -142,3 +153,67 @@ def test_alembic_downgrade_drops_longevity_markers_while_others_remain(tmp_path)
     assert "longevity_markers" not in table_names
     for table in ("workouts", "sleep", "daily_health", "body_composition"):
         assert table in table_names, f"{table} unexpectedly dropped"
+
+
+def test_alembic_upgrade_head_creates_journal_table(tmp_path):
+    _, engine = _migrate_to_head(tmp_path)
+    inspector = inspect(engine)
+    table_names = set(inspector.get_table_names())
+
+    assert "journal_entries" in table_names
+    columns = {col["name"] for col in inspector.get_columns("journal_entries")}
+    assert columns == EXPECTED_JOURNAL_COLUMNS
+
+    # FTS5 virtual tables register in sqlite_master, so get_table_names()
+    # lists journal_fts too.
+    assert "journal_fts" in table_names
+
+
+def test_alembic_downgrade_drops_journal_while_others_remain(tmp_path):
+    config, engine = _migrate_to_head(tmp_path)
+
+    # Downgrade one revision (0004 -> 0003) should drop only the journal
+    # objects (table + FTS5 virtual table); all prior domain tables remain.
+    command.downgrade(config, "0003")
+
+    inspector = inspect(create_engine(str(engine.url)))
+    table_names = set(inspector.get_table_names())
+    assert "journal_entries" not in table_names
+    assert "journal_fts" not in table_names
+    for table in (
+        "workouts",
+        "sleep",
+        "daily_health",
+        "body_composition",
+        "longevity_markers",
+    ):
+        assert table in table_names, f"{table} unexpectedly dropped"
+
+
+def test_journal_fts_trigger_syncs_on_insert(tmp_path):
+    """Direct proof that the AFTER INSERT trigger keeps journal_fts in sync.
+
+    Deliberately bypasses JournalEntry/SessionLocal and inserts via a raw
+    SQLAlchemy connection -- this proves the sync is a DB-level guarantee
+    from the trigger DDL itself, not something that only works because the
+    ORM happens to cooperate. Plan 04-02's log_note/query_journal tools
+    depend on this holding true without any FTS5-specific application code.
+    """
+    _, engine = _migrate_to_head(tmp_path)
+
+    with engine.connect() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO journal_entries (body, occurred_at, tags, created_at)
+                VALUES ('tweaked my leg today', '2026-07-08', 'injury, leg', '2026-07-08 00:00:00')
+                """
+            )
+        )
+        conn.commit()
+
+        rows = conn.execute(
+            text("SELECT rowid FROM journal_fts WHERE journal_fts MATCH 'leg'")
+        ).fetchall()
+
+    assert len(rows) == 1

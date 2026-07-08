@@ -132,3 +132,35 @@ class BodyComposition(Base):
     synced_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
     )
+
+
+class JournalEntry(Base):
+    """A free-text subjective journal entry (D-01).
+
+    Unlike every other table in this module, this data originates in-app
+    (typed by the user or written by an MCP tool), not from a Garmin sync --
+    so there is deliberately NO ``raw`` column and no structured mood/severity
+    enum, only a free-text ``body`` plus optional ``tags``.
+
+    ``id`` is the FIRST autoincrement surrogate PK in this codebase (every
+    prior table keys on a Garmin natural key or ``date``). It MUST stay a
+    single-column ``INTEGER PRIMARY KEY`` -- SQLite's true ``rowid`` alias --
+    because the ``journal_fts`` external-content FTS5 table (migration 0004)
+    is wired via ``content_rowid='id'`` and depends on ``id`` always equalling
+    the underlying SQLite rowid (RESEARCH.md Pitfall 3).
+
+    ``occurred_at`` (start) plus optional ``end_date`` (D-02) let an entry
+    represent either a point in time or an open-ended span so the coach can
+    correlate it against other domains by date.
+    """
+
+    __tablename__ = "journal_entries"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    occurred_at: Mapped[date_] = mapped_column(Date, nullable=False)
+    end_date: Mapped[date_ | None] = mapped_column(Date, nullable=True)
+    tags: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
