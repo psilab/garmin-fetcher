@@ -784,6 +784,24 @@ def update_goal(
         session.close()
 
 
+@mcp.tool
+def get_latest_briefing(limit: int = 1) -> list[dict]:
+    """Retrieve the most recent AI-generated morning briefing(s) (D-01/D-02),
+    identified by the reserved exact-match tag "briefing" -- never returns
+    the user's own subjective notes. Plain ORM filter, no FTS5 involved."""
+    session = SessionLocal()
+    try:
+        stmt = (
+            select(JournalEntry)
+            .where(JournalEntry.tags == "briefing")
+            .order_by(JournalEntry.occurred_at.desc())
+            .limit(limit)
+        )
+        return [_journal_to_dict(e) for e in session.execute(stmt).scalars().all()]
+    finally:
+        session.close()
+
+
 # path="/" because the whole sub-app is mounted at /mcp by the parent app.
 # Middleware scoped only to this sub-app — never attached to the parent
 # FastAPI app, so REST routes remain unauthenticated in Phase 1.
