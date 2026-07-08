@@ -46,6 +46,18 @@ async def test_missing_token_401(client):
 
 
 @pytest.mark.anyio
+async def test_log_note_requires_bearer_token(client):
+    """T-04-06: the first write tool in the codebase must be rejected
+    without a valid bearer token, identically to every read tool.
+    BearerAuthMiddleware rejects before the body is ever parsed as an MCP
+    JSON-RPC request, so this proves the mount-wide 401 behavior covers
+    write tools without needing to construct a tools/call envelope naming
+    log_note specifically."""
+    response = await client.post("/", json={})
+    assert response.status_code == 401
+
+
+@pytest.mark.anyio
 async def test_invalid_token_401(client):
     response = await client.post(
         "/", json={}, headers={"Authorization": "Bearer wrong-token"}
