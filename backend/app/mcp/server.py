@@ -21,7 +21,7 @@ from ..analysis.correlate import compute_correlation
 from ..analysis.registry import METRICS
 from ..analysis.trend import compute_trend
 from ..db import SessionLocal
-from ..models import BodyComposition, DailyHealth, JournalEntry, Sleep, Workout
+from ..models import BodyComposition, DailyHealth, Goal, JournalEntry, Sleep, Workout
 from .auth import BearerAuthMiddleware
 
 mcp = FastMCP("Garmin Coach")
@@ -690,6 +690,96 @@ def delete_note(id: int) -> dict:
         session.delete(entry)
         session.commit()
         return deleted
+    finally:
+        session.close()
+
+
+_GOAL_SUMMARY_COLUMNS = (
+    "id",
+    "description",
+    "target_metric",
+    "target_value",
+    "status",
+    "created_at",
+    "updated_at",
+)
+
+
+def _goal_to_dict(goal: Goal) -> dict:
+    return {col: getattr(goal, col) for col in _GOAL_SUMMARY_COLUMNS}
+
+
+@mcp.tool
+def set_goal(
+    description: str,
+    target_metric: str | None = None,
+    target_value: float | None = None,
+) -> dict:
+    """Create a new longevity/fitness goal for the coach to track (COACH-06).
+    `status` defaults to "active"."""
+    if not description or not description.strip():
+        raise ValueError("description must be non-empty")
+
+    session = SessionLocal()
+    try:
+        goal = Goal(
+            description=description,
+            target_metric=target_metric,
+            target_value=target_value,
+        )
+        session.add(goal)
+        session.commit()
+        session.refresh(goal)
+        return _goal_to_dict(goal)
+    finally:
+        session.close()
+
+
+@mcp.tool
+def list_goals(status: str | None = None) -> list[dict]:
+    """List goals, optionally filtered by status (e.g. "active", "paused",
+    "done"). No filter returns every goal, newest first."""
+    session = SessionLocal()
+    try:
+        stmt = select(Goal).order_by(Goal.created_at.desc())
+        if status is not None:
+            stmt = stmt.where(Goal.status == status)
+        return [_goal_to_dict(g) for g in session.execute(stmt).scalars().all()]
+    finally:
+        session.close()
+
+
+@mcp.tool
+def update_goal(
+    id: int,
+    description: str | None = None,
+    target_metric: str | None = None,
+    target_value: float | None = None,
+    status: str | None = None,
+) -> dict:
+    """Amend an existing goal in place -- e.g. change status to "done" or
+    "paused", or correct description/target fields. Always bumps
+    `updated_at`, since SQLite's server_default=func.now() only fires on
+    INSERT, not UPDATE."""
+    session = SessionLocal()
+    try:
+        goal = session.get(Goal, id)
+        if goal is None:
+            raise ValueError(f"no goal with id={id}")
+        if description is not None:
+            if not description.strip():
+                raise ValueError("description must be non-empty")
+            goal.description = description
+        if target_metric is not None:
+            goal.target_metric = target_metric
+        if target_value is not None:
+            goal.target_value = target_value
+        if status is not None:
+            goal.status = status
+        goal.updated_at = datetime.utcnow()
+        session.commit()
+        session.refresh(goal)
+        return _goal_to_dict(goal)
     finally:
         session.close()
 

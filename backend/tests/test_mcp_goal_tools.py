@@ -12,6 +12,12 @@ os.environ.setdefault("MCP_TOKEN", "test-secret-for-tool-tests")
 
 import pytest
 
+# Module-level import ensures app.models (and therefore Goal) is registered
+# on Base.metadata before the db_session fixture calls
+# Base.metadata.create_all() -- mirrors test_mcp_journal_tools.py's
+# module-level `from app.models import JournalEntry` for the same reason.
+from app.models import Goal  # noqa: F401
+
 
 @pytest.fixture(autouse=True)
 def _patch_session_local(monkeypatch, db_session):
