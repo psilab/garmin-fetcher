@@ -210,3 +210,34 @@ def test_query_journal_rejects_non_positive_limit(journal_db_session):
 
     with pytest.raises(ValueError):
         query_journal(limit=-1)
+
+
+def test_delete_note_removes_entry(journal_db_session):
+    from app.mcp.server import delete_note, log_note, query_journal
+
+    logged = log_note(body="entry to delete")
+
+    deleted = delete_note(id=logged["id"])
+
+    assert deleted["id"] == logged["id"]
+    assert deleted["body"] == "entry to delete"
+    assert query_journal() == []
+
+
+def test_delete_note_removes_from_fts_index(journal_db_session):
+    from app.mcp.server import delete_note, log_note, query_journal
+
+    logged = log_note(body="uniqueftsdeletetoken in this note")
+
+    assert len(query_journal(text="uniqueftsdeletetoken")) == 1
+
+    delete_note(id=logged["id"])
+
+    assert query_journal(text="uniqueftsdeletetoken") == []
+
+
+def test_delete_note_nonexistent_raises(journal_db_session):
+    from app.mcp.server import delete_note
+
+    with pytest.raises(ValueError):
+        delete_note(id=999999)
