@@ -164,3 +164,28 @@ class JournalEntry(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
     )
+
+
+class Goal(Base):
+    """A user-set longevity/fitness goal (COACH-06), managed by the coach.
+
+    Unlike `JournalEntry` (append-only, never mutated after creation), `Goal`
+    is mutable structured state -- `update_goal` patches fields on an
+    existing row in place. There is no `goals_fts` table, so no FTS5
+    rowid-equality constraint applies to `id` the way it does for
+    `JournalEntry` (RESEARCH.md Pitfall 3 does not apply here).
+    """
+
+    __tablename__ = "goals"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    target_metric: Mapped[str | None] = mapped_column(String, nullable=True)
+    target_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="active")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
