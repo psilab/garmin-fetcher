@@ -12,7 +12,8 @@ request to the mount is bearer-checked before it ever reaches a tool.
 from datetime import date, datetime, time, timedelta
 
 from fastmcp import FastMCP
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
+from sqlalchemy.exc import OperationalError
 from starlette.middleware import Middleware
 
 from ..analysis.anomaly import detect_anomalies as _detect_anomalies
@@ -20,7 +21,7 @@ from ..analysis.correlate import compute_correlation
 from ..analysis.registry import METRICS
 from ..analysis.trend import compute_trend
 from ..db import SessionLocal
-from ..models import BodyComposition, DailyHealth, Sleep, Workout
+from ..models import BodyComposition, DailyHealth, JournalEntry, Sleep, Workout
 from .auth import BearerAuthMiddleware
 
 mcp = FastMCP("Garmin Coach")
@@ -512,6 +513,145 @@ def detect_anomalies(
             window_days=window_days or spec.default_window_days,
             z_threshold=z_threshold,
         )
+    finally:
+        session.close()
+
+
+# --- Journal tools (DATA-06/COACH-02/COACH-03 -- first write tools in the
+# codebase). query_journal is read-only; log_note/update_note are the first
+# INSERT/UPDATE tools registered on this mount. All three reuse the existing
+# SessionLocal/ValueError conventions and never write to journal_fts
+# directly -- the 04-01 AFTER INSERT/UPDATE/DELETE triggers own that sync. ---
+
+_JOURNAL_SUMMARY_COLUMNS = ("id", "body", "occurred_at", "end_date", "tags", "created_at")
+
+
+def _journal_to_dict(entry: JournalEntry) -> dict:
+    return {col: getattr(entry, col) for col in _JOURNAL_SUMMARY_COLUMNS}
+
+
+def _apply_journal_overlap_filter(stmt, start: date | None, end: date | None):
+    """D-02b interval-overlap filter (NULL end_date == unbounded/ongoing).
+
+    Distinct from ``_apply_date_filters`` (plain col >= start AND col <=
+    end) -- that semantics is wrong for a span-vs-range overlap test.
+    """
+    if start is not None:
+        stmt = stmt.where(
+            (JournalEntry.end_date.is_(None)) | (JournalEntry.end_date >= start)
+        )
+    if end is not None:
+        stmt = stmt.where(JournalEntry.occurred_at <= end)
+    return stmt
+
+
+def _query_journal_by_text(session, text_query: str, start: date | None, end: date | None, limit: int) -> list[dict]:
+    """bm25-ranked FTS5 MATCH query, ascending (lower/more negative = better
+    match -- never DESC, never negate the score). ``:text`` is always bound
+    as a parameter, never string-formatted (T-04-04 SQL injection
+    mitigation)."""
+    sql = """
+        SELECT je.id, je.body, je.occurred_at, je.end_date, je.tags, je.created_at,
+               bm25(journal_fts) AS relevance
+        FROM journal_fts
+        JOIN journal_entries je ON je.id = journal_fts.rowid
+        WHERE journal_fts MATCH :text
+    """
+    params = {"text": text_query, "limit": limit}
+    if start is not None:
+        sql += " AND (je.end_date IS NULL OR je.end_date >= :start)"
+        params["start"] = start
+    if end is not None:
+        sql += " AND je.occurred_at <= :end"
+        params["end"] = end
+    sql += " ORDER BY bm25(journal_fts) LIMIT :limit"
+    try:
+        rows = session.execute(text(sql), params).mappings().all()
+    except OperationalError as e:
+        raise ValueError(f"could not parse search text: {text_query!r}") from e
+    return [dict(r) for r in rows]
+
+
+@mcp.tool
+def query_journal(
+    text: str | None = None,
+    start: date | None = None,
+    end: date | None = None,
+    limit: int = 20,
+) -> list[dict]:
+    """Search the subjective journal by keyword (FTS5, bm25-ranked) and/or
+    date-range overlap (D-02b -- an ongoing/open-ended note surfaces on
+    every day it is active). Returns full entries, newest first when no
+    text query is given."""
+    _validate_range(start, end)
+    session = SessionLocal()
+    try:
+        if text is not None:
+            return _query_journal_by_text(session, text, start, end, limit)
+        stmt = select(JournalEntry)
+        stmt = _apply_journal_overlap_filter(stmt, start, end)
+        stmt = stmt.order_by(JournalEntry.occurred_at.desc()).limit(limit)
+        return [_journal_to_dict(e) for e in session.execute(stmt).scalars().all()]
+    finally:
+        session.close()
+
+
+@mcp.tool
+def log_note(
+    body: str,
+    occurred_at: date | None = None,
+    end_date: date | None = None,
+    tags: str | None = None,
+) -> dict:
+    """Log a free-text journal note (mood/pain/injury/etc). `occurred_at`
+    defaults to today if not given; `end_date` left unset means the note
+    describes an ongoing/point-in-time condition (D-02a)."""
+    if not body or not body.strip():
+        raise ValueError("body must be non-empty")
+    if end_date is not None and occurred_at is not None and end_date < occurred_at:
+        raise ValueError("end_date must be >= occurred_at")
+
+    session = SessionLocal()
+    try:
+        entry = JournalEntry(
+            body=body,
+            occurred_at=occurred_at or date.today(),
+            end_date=end_date,
+            tags=tags,
+        )
+        session.add(entry)
+        session.commit()
+        session.refresh(entry)
+        return _journal_to_dict(entry)
+    finally:
+        session.close()
+
+
+@mcp.tool
+def update_note(
+    id: int,
+    body: str | None = None,
+    end_date: date | None = None,
+    tags: str | None = None,
+) -> dict:
+    """Amend an existing note -- e.g. close out an ongoing condition by
+    setting end_date (D-05a), or correct body/tags (D-05)."""
+    session = SessionLocal()
+    try:
+        entry = session.get(JournalEntry, id)
+        if entry is None:
+            raise ValueError(f"no journal entry with id={id}")
+        if body is not None:
+            entry.body = body
+        if end_date is not None:
+            if end_date < entry.occurred_at:
+                raise ValueError("end_date must be >= occurred_at")
+            entry.end_date = end_date
+        if tags is not None:
+            entry.tags = tags
+        session.commit()
+        session.refresh(entry)
+        return _journal_to_dict(entry)
     finally:
         session.close()
 
