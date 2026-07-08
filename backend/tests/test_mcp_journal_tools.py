@@ -145,3 +145,68 @@ def test_query_journal_malformed_match_raises_valueerror(journal_db_session):
 
     with pytest.raises(ValueError):
         query_journal(text='"unterminated quote')
+
+
+def test_log_note_rejects_end_date_before_default_occurred_at(journal_db_session):
+    from app.mcp.server import log_note
+
+    with pytest.raises(ValueError):
+        log_note(body="x", end_date=date(2020, 1, 1))
+
+
+def test_log_note_still_rejects_explicit_inverted_span(journal_db_session):
+    from app.mcp.server import log_note
+
+    with pytest.raises(ValueError):
+        log_note(body="x", occurred_at=date(2026, 1, 10), end_date=date(2026, 1, 1))
+
+
+def test_query_journal_text_and_date_branches_return_same_keys(journal_db_session):
+    from app.mcp.server import log_note, query_journal
+
+    log_note(body="unique shape parity marker")
+
+    expected_keys = {"id", "body", "occurred_at", "end_date", "tags", "created_at", "relevance"}
+
+    text_result = query_journal(text="marker")
+    date_result = query_journal()
+
+    assert len(text_result) == 1
+    assert len(date_result) == 1
+    assert set(text_result[0].keys()) == expected_keys
+    assert set(date_result[0].keys()) == expected_keys
+    assert isinstance(text_result[0]["occurred_at"], date)
+    assert isinstance(date_result[0]["occurred_at"], date)
+
+
+def test_query_journal_no_text_branch_relevance_is_none(journal_db_session):
+    from app.mcp.server import log_note, query_journal
+
+    log_note(body="relevance none check")
+
+    result = query_journal()
+
+    assert len(result) == 1
+    assert result[0]["relevance"] is None
+
+
+def test_update_note_rejects_blank_body(journal_db_session):
+    from app.mcp.server import log_note, update_note
+
+    logged = log_note(body="original text")
+
+    with pytest.raises(ValueError):
+        update_note(id=logged["id"], body="")
+
+    with pytest.raises(ValueError):
+        update_note(id=logged["id"], body="   ")
+
+
+def test_query_journal_rejects_non_positive_limit(journal_db_session):
+    from app.mcp.server import query_journal
+
+    with pytest.raises(ValueError):
+        query_journal(limit=0)
+
+    with pytest.raises(ValueError):
+        query_journal(limit=-1)

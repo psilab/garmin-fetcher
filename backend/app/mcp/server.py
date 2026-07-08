@@ -551,8 +551,7 @@ def _query_journal_by_text(session, text_query: str, start: date | None, end: da
     as a parameter, never string-formatted (T-04-04 SQL injection
     mitigation)."""
     sql = """
-        SELECT je.id, je.body, je.occurred_at, je.end_date, je.tags, je.created_at,
-               bm25(journal_fts) AS relevance
+        SELECT je.id, bm25(journal_fts) AS relevance
         FROM journal_fts
         JOIN journal_entries je ON je.id = journal_fts.rowid
         WHERE journal_fts MATCH :text
@@ -566,10 +565,22 @@ def _query_journal_by_text(session, text_query: str, start: date | None, end: da
         params["end"] = end
     sql += " ORDER BY bm25(journal_fts) LIMIT :limit"
     try:
-        rows = session.execute(text(sql), params).mappings().all()
+        rows = session.execute(text(sql), params).all()
     except OperationalError as e:
         raise ValueError(f"could not parse search text: {text_query!r}") from e
-    return [dict(r) for r in rows]
+    matched_ids = [row.id for row in rows]
+    if not matched_ids:
+        return []
+    entries_by_id = {
+        e.id: e
+        for e in session.execute(
+            select(JournalEntry).where(JournalEntry.id.in_(matched_ids))
+        ).scalars().all()
+    }
+    return [
+        {**_journal_to_dict(entries_by_id[row.id]), "relevance": row.relevance}
+        for row in rows
+    ]
 
 
 @mcp.tool
@@ -584,6 +595,8 @@ def query_journal(
     every day it is active). Returns full entries, newest first when no
     text query is given."""
     _validate_range(start, end)
+    if limit <= 0:
+        raise ValueError("limit must be a positive integer")
     session = SessionLocal()
     try:
         if text is not None:
@@ -591,7 +604,10 @@ def query_journal(
         stmt = select(JournalEntry)
         stmt = _apply_journal_overlap_filter(stmt, start, end)
         stmt = stmt.order_by(JournalEntry.occurred_at.desc()).limit(limit)
-        return [_journal_to_dict(e) for e in session.execute(stmt).scalars().all()]
+        return [
+            {**_journal_to_dict(e), "relevance": None}
+            for e in session.execute(stmt).scalars().all()
+        ]
     finally:
         session.close()
 
@@ -608,14 +624,15 @@ def log_note(
     describes an ongoing/point-in-time condition (D-02a)."""
     if not body or not body.strip():
         raise ValueError("body must be non-empty")
-    if end_date is not None and occurred_at is not None and end_date < occurred_at:
+    resolved_occurred_at = occurred_at or date.today()
+    if end_date is not None and end_date < resolved_occurred_at:
         raise ValueError("end_date must be >= occurred_at")
 
     session = SessionLocal()
     try:
         entry = JournalEntry(
             body=body,
-            occurred_at=occurred_at or date.today(),
+            occurred_at=resolved_occurred_at,
             end_date=end_date,
             tags=tags,
         )
@@ -642,6 +659,8 @@ def update_note(
         if entry is None:
             raise ValueError(f"no journal entry with id={id}")
         if body is not None:
+            if not body.strip():
+                raise ValueError("body must be non-empty")
             entry.body = body
         if end_date is not None:
             if end_date < entry.occurred_at:
