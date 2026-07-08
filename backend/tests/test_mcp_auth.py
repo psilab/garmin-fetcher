@@ -58,6 +58,17 @@ async def test_log_note_requires_bearer_token(client):
 
 
 @pytest.mark.anyio
+async def test_goal_write_tools_require_bearer_token(client):
+    """T-05-01: the goals domain's write tools (set_goal/update_goal) must be
+    rejected without a valid bearer token, identically to log_note (T-04-06
+    precedent). Mirrors test_log_note_requires_bearer_token exactly -- the
+    mount-wide 401 check rejects before the body is parsed, so no
+    tool-specific envelope is needed."""
+    response = await client.post("/", json={})
+    assert response.status_code == 401
+
+
+@pytest.mark.anyio
 async def test_invalid_token_401(client):
     response = await client.post(
         "/", json={}, headers={"Authorization": "Bearer wrong-token"}
