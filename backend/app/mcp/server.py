@@ -675,6 +675,25 @@ def update_note(
         session.close()
 
 
+@mcp.tool
+def delete_note(id: int) -> dict:
+    """Permanently delete a journal note by id (D-05b). Returns the deleted
+    entry so the coach can confirm what was removed. Raises ValueError if no
+    entry with that id exists. The journal_fts index is kept in sync
+    automatically by the AFTER DELETE trigger (migration 0004)."""
+    session = SessionLocal()
+    try:
+        entry = session.get(JournalEntry, id)
+        if entry is None:
+            raise ValueError(f"no journal entry with id={id}")
+        deleted = _journal_to_dict(entry)
+        session.delete(entry)
+        session.commit()
+        return deleted
+    finally:
+        session.close()
+
+
 # path="/" because the whole sub-app is mounted at /mcp by the parent app.
 # Middleware scoped only to this sub-app — never attached to the parent
 # FastAPI app, so REST routes remain unauthenticated in Phase 1.
