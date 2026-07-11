@@ -7,6 +7,13 @@ import time) and test_mcp_analysis_tools.py's SessionLocal-monkeypatch
 pattern -- but the SessionLocal that must be patched lives in the ROUTE's
 module (app.api.metrics), not app.mcp.server.
 
+Unlike the MCP tool tests (which call the tool functions directly, in the
+test thread), these tests exercise the routes through the ASGI app. FastAPI
+dispatches sync route handlers to a worker THREAD, so the shared conftest
+``db_session`` (a default per-thread :memory: connection) would be invisible
+to the handler. A ``StaticPool`` + ``check_same_thread=False`` engine shares
+one connection across threads, so the seeded rows are visible to the route.
+
 Covers T-06-01 (unknown metric 404 / bad range 400 raised BEFORE any DB
 session opens) and the coach-independence regression (/health 200 and
 POST /mcp/ 401 still hold after the router include).
@@ -17,11 +24,15 @@ from datetime import date, timedelta
 
 import httpx
 import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
 # app.mcp.auth reads MCP_TOKEN at import time -- must be set before the first
 # import of app.main below (setdefault is order-safe, mirrors the MCP tests).
 os.environ.setdefault("MCP_TOKEN", "test-secret-for-api-metrics-tests")
 
+from app.db import Base  # noqa: E402
 from app.main import app  # noqa: E402
 from app.models import DailyHealth, Sleep  # noqa: E402
 
@@ -31,32 +42,45 @@ def anyio_backend():
     return "asyncio"
 
 
-def _patch_session_local(monkeypatch, db_session):
-    """Point the route module's SessionLocal at the seeded in-memory session."""
+@pytest.fixture
+def api_session(monkeypatch):
+    """A cross-thread-safe in-memory session factory, with the route module's
+    ``SessionLocal`` monkeypatched to it. Yields a session for seeding; the
+    route opens its own sessions on the SAME shared connection."""
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    TestSession = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
     import app.api.metrics as metrics_module
 
-    monkeypatch.setattr(metrics_module, "SessionLocal", lambda: db_session)
+    monkeypatch.setattr(metrics_module, "SessionLocal", TestSession)
+
+    session = TestSession()
+    try:
+        yield session
+    finally:
+        session.close()
 
 
-def _seed_resting_hr(db_session, days=5):
+def _seed_resting_hr(session, days=5):
     """Seed consecutive-day DailyHealth rows within the default 90d window."""
     start = date.today() - timedelta(days=days)
-    db_session.add_all(
+    session.add_all(
         [
-            DailyHealth(
-                date=start + timedelta(days=i),
-                resting_hr=50 + i,
-                raw="{}",
-            )
+            DailyHealth(date=start + timedelta(days=i), resting_hr=50 + i, raw="{}")
             for i in range(days)
         ]
     )
-    db_session.commit()
+    session.commit()
 
 
-def _seed_hrv(db_session, days=5):
+def _seed_hrv(session, days=5):
     start = date.today() - timedelta(days=days)
-    db_session.add_all(
+    session.add_all(
         [
             Sleep(
                 date=start + timedelta(days=i),
@@ -67,13 +91,12 @@ def _seed_hrv(db_session, days=5):
             for i in range(days)
         ]
     )
-    db_session.commit()
+    session.commit()
 
 
 @pytest.mark.anyio
-async def test_metric_series_returns_compute_trend_shape(monkeypatch, db_session):
-    _patch_session_local(monkeypatch, db_session)
-    _seed_resting_hr(db_session)
+async def test_metric_series_returns_compute_trend_shape(api_session):
+    _seed_resting_hr(api_session)
 
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -91,9 +114,8 @@ async def test_metric_series_returns_compute_trend_shape(monkeypatch, db_session
 
 
 @pytest.mark.anyio
-async def test_metric_series_default_range_is_90d(monkeypatch, db_session):
-    _patch_session_local(monkeypatch, db_session)
-    _seed_hrv(db_session)
+async def test_metric_series_default_range_is_90d(api_session):
+    _seed_hrv(api_session)
 
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -105,7 +127,7 @@ async def test_metric_series_default_range_is_90d(monkeypatch, db_session):
 
 
 @pytest.mark.anyio
-async def test_unknown_metric_returns_404_before_touching_db(monkeypatch, db_session):
+async def test_unknown_metric_returns_404_before_touching_db(monkeypatch):
     def _boom():
         raise AssertionError("SessionLocal must not be opened for an unknown metric")
 
@@ -121,7 +143,7 @@ async def test_unknown_metric_returns_404_before_touching_db(monkeypatch, db_ses
 
 
 @pytest.mark.anyio
-async def test_bad_range_returns_400_before_touching_db(monkeypatch, db_session):
+async def test_bad_range_returns_400_before_touching_db(monkeypatch):
     def _boom():
         raise AssertionError("SessionLocal must not be opened for an unknown range")
 
