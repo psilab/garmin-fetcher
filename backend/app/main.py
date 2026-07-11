@@ -11,6 +11,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 from .api.metrics import router as metrics_router
+from .api.metrics import workouts_router
 from .garmin import NotAuthenticated, get_client
 from .mcp.server import mcp_app
 from .sync.scheduler import build_scheduler
@@ -105,9 +106,11 @@ def activities_range(
 
 # Phase 6 (Plan 06-01, DASH-01) adds the read-only dashboard REST façade over
 # the Phase 3 analysis engine: `/api/metrics/*` (registry-backed trend series)
-# via the included router below. The `/mcp` mount MUST stay the LAST
-# route-registration statement so the REST routes above (and this router) are
-# unaffected by anything on the /mcp sub-app.
+# and `/api/workouts/daily` (bespoke daily rollup) via the included routers
+# below. The `/mcp` mount MUST stay the LAST route-registration statement so
+# the REST routes above (and these routers) are unaffected by anything on the
+# /mcp sub-app.
 app.include_router(metrics_router)
+app.include_router(workouts_router)
 
 app.mount("/mcp", mcp_app)
