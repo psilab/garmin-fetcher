@@ -40,6 +40,14 @@ services:
       - "traefik.http.routers.garmin-frontend.entrypoints=websecure"
       - "traefik.http.routers.garmin-frontend.tls.certresolver=letsencrypt"
       - "traefik.http.services.garmin-frontend.loadbalancer.server.port=3000"
+      # D-05: gate the WHOLE dashboard behind edge-enforced Traefik basic-auth
+      # (zero app auth code). The credential is referenced ONLY via the
+      # ${DASHBOARD_HTPASSWD} host/.env variable — never a committed htpasswd
+      # hash or plaintext password (T-06-03). Actual secret provisioning + the
+      # live prompt check happen in Plan 03's gate. The garmin-mcp router
+      # (backend service) stays bearer-gated and is deliberately untouched.
+      - "traefik.http.middlewares.garmin-dashboard-auth.basicauth.users=${DASHBOARD_HTPASSWD}"
+      - "traefik.http.routers.garmin-frontend.middlewares=garmin-dashboard-auth"
 
 volumes:
   garmin_tokens:
