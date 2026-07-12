@@ -24,6 +24,19 @@ const ERROR_CARD_CLASS =
 // Cards that carry the workouts freshness caveat (CONTEXT §deferred).
 const FRESHNESS_CAVEAT_NAMES = new Set(["workouts", "training_load"]);
 
+// Convert a grams-valued metric result to kilograms for display (weight_g → kg).
+// Nulls (missing weigh-ins) pass through so the chart's connectNulls still works.
+function gramsToKg(
+  r: Extract<MetricResult, { ok: true }>,
+): MetricResult {
+  const toKg = (v: number | null): number | null => (v === null ? null : v / 1000);
+  return {
+    ...r,
+    latest: toKg(r.latest ?? null),
+    series: r.series.map((p) => ({ date: p.date, value: toKg(p.value) })),
+  };
+}
+
 function lastValue(series: MetricPoint[]): number | null {
   for (let i = series.length - 1; i >= 0; i--) {
     if (series[i].value !== null) return series[i].value;
@@ -56,7 +69,10 @@ export default async function MetricCard({ name, range }: MetricCardProps) {
       getMetricSeries("weight", range),
       getMetricSeries("body_fat_pct", range),
     ]);
-    result = weight;
+    // The backend `weight` metric is BodyComposition.weight_g — raw grams. The
+    // card (and its "kg" unit) render kilograms, so scale the series + latest by
+    // 1/1000 here at the display edge; the REST API stays authoritative in grams.
+    result = weight.ok ? gramsToKg(weight) : weight;
     if (bodyFat.ok) secondary = bodyFat.series;
   } else {
     result = await getMetricSeries(name, range);
